@@ -1,0 +1,15 @@
+defaults:
+  - default
+  - dataset: benzene # Can be benzene, resorcinol, ethane, malonaldehyde, phenol, ethanol
+
+_target_: boa.data.datamodule.ProbeDataModule
+
+batch_size: 
+  train: 12
+  val: 12
+  test: 12
+
+n_probe:
+  train: 5000
+  
+split_file: null

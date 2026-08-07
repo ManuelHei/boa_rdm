@@ -1,0 +1,18 @@
+_target_: boa.model.module.ChgLightningModule
+
+criterion: mae
+pbc: false
+dft_basis_set: ${data.basis_info.basis}
+dft_wt_aug: ${data.basis_info.even_tempered}
+concat_basis: false
+beta: None
+orb_cutoff: 3.0
+use_radial_correction: true
+use_abs: true
+abs_scale: 1e3
+scale_factor: 1e-1
+
+basis_info: ${data.basis_info}
+
+defaults:
+  - net: boa

@@ -1,0 +1,8 @@
+# @package _global_
+
+defaults:
+  - qm9_vasp_small
+
+ckpt_path:
+  - "path/to/model1"
+  - "path/to/model2"

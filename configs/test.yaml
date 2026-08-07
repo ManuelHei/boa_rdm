@@ -1,0 +1,50 @@
+defaults:
+  - data: qm9_vasp_small
+  - paths: default
+  - hydra: default
+  - trainer: default
+  - optim: adam
+  - lr_scheduler: cosine_annealing
+  - callbacks: default
+  - logger: tensorboard
+  - _self_
+  - eval: null
+
+name: test
+
+task_name: test
+
+conventions:
+  x_key: 'x'
+  y_key: 'y'
+
+# reproducibility
+seed: 0
+
+lr_schedule_freq: 1
+
+ema:
+  decay: 0.995
+
+restore:
+  ckpt_or_run_path: null
+  mode: null # null, finetune, hotstart, continue
+
+monitor:
+  metric: 'loss/val'
+  mode: 'min'
+
+log_train_nmape_interval: 10
+
+ckpt_path: null
+
+max_n_probe_per_pass: 20000
+
+data:
+  datamodule:
+    batch_size: 
+      train: 1
+      val: 1
+      test: 1
+
+save_test_prediction_folder: null

@@ -1,0 +1,13 @@
+# @package _global_
+
+defaults:
+  - md
+
+data:
+  datamodule:
+    dataset:
+      mol_name: ethane
+
+ckpt_path:
+  - "path/to/model1"
+  - "path/to/model2"

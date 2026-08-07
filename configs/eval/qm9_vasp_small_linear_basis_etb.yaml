@@ -1,0 +1,9 @@
+# @package _global_
+
+defaults:
+  - override /data: qm9_vasp_small_etb
+  - override /data/datamodule/dataset/transform: test_default
+
+ckpt_path: 
+  - "path/to/model1"
+  - "path/to/model2"

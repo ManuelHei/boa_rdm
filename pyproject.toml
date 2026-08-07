@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=45", "setuptools-scm[toml]>=6.2", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boa"
+version = "0.0.1"
+description = "Basis Overlap Architecture (BOA)"
+readme = "README.md"
+requires-python = ">=3.9"
+classifiers = ["Private :: Do Not Upload"]
+authors = [
+    {name = "Manuel V. Klockow", email = "manuel.klockow@iwr.uni-heidelberg.de"}
+]
+
+[project.urls]
+Homepage = "https://github.com/ManuelHei/boa"
+
+# [project.scripts]
+# train_command = "boa.train:main"
+# eval_command = "boa.eval:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["boa*"]
+
+[tool.isort]
+known_first_party = ["scdp", "mldft"]
+
+[tool.ruff]
+exclude = [
+    "scdp/",
+    "structures25/",
+]
+line-length = 99
+
+[tool.ruff.lint]
+ignore = ["E741"]

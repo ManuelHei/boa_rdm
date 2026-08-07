@@ -1,0 +1,13 @@
+# @package _global_
+
+defaults:
+  - override /data: qm9_vasp_small
+  - override /data/datamodule/dataset/transform: test_default
+
+data:
+  basis_info:
+    basis: "gth-tzv2p"
+
+ckpt_path: 
+  - "path/to/model1"
+  - "path/to/model2"
