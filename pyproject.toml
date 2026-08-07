@@ -7,14 +7,25 @@ name = "boa"
 version = "0.0.1"
 description = "Basis Overlap Architecture (BOA)"
 readme = "README.md"
-requires-python = ">=3.9"
-classifiers = ["Private :: Do Not Upload"]
+requires-python = ">=3.11,<3.13"
+classifiers = [
+    # Deliberately invalid classifier: PyPI rejects it, so an accidental
+    # `twine upload` of this research artifact fails fast.
+    "Private :: Do Not Upload",
+    "License :: OSI Approved :: GNU Lesser General Public License v3 (LGPLv3)",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Chemistry",
+]
 authors = [
     {name = "Manuel V. Klockow", email = "manuel.klockow@iwr.uni-heidelberg.de"}
 ]
 
 [project.urls]
-Homepage = "https://github.com/ManuelHei/boa"
+Homepage = "https://github.com/sciai-lab/boa"
+Repository = "https://github.com/sciai-lab/boa"
+Paper = "https://openreview.net/pdf?id=HDdkFjFEZd"
 
 # [project.scripts]
 # train_command = "boa.train:main"
