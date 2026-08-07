@@ -11,11 +11,23 @@ uv pip install -e scdp/ -e structures25/ -e .
 ```
 
 ## Environment Variables
-Fill .env with following lines to set environment variables:
+
+BOA resolves two paths from the environment. Create a `.env` file in the
+repository root:
+
 ```bash
-BOA_DATA=""
-BOA_MODELS=""
+# Where the datasets live — resolved as `data_dir` in configs/paths/default.yaml
+BOA_DATA="/path/to/data"
+
+# Where run outputs go: checkpoints, logs and TensorBoard events (`log_dir`)
+BOA_MODELS="/path/to/models"
 ```
+
+`.env` is loaded automatically — `boa/train.py` and `boa/test.py` call
+`rootutils.setup_root(..., indicator=".project-root")`, which finds the
+repository root and reads the file from there. No `source` or `export` needed.
+
+The file is gitignored, so your local paths stay out of version control.
 
 ## Data setup
 
