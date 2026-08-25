@@ -6,11 +6,12 @@ hydra-colorlog
 hydra-submitit-launcher
 omegaconf==2.3.0
 
-torch
+torch==2.8.0
 torchdata
 lightning==2.5.4
+torchmetrics
 torch_ema==0.3
-torch_geometric
+torch_geometric==2.6.1
 torch-cluster
 e3nn==0.5.6
 tensorboard
@@ -24,10 +25,13 @@ plotly==5.18.0
 pymatgen==2023.11.12
 python-dotenv==1.0.1
 rdkit
-pyscf
+pyscf==2.10.0
 lmdb==1.4.1
 lz4==4.3.2
 zarr
+numcodecs
+h5py
+opt-einsum
 loguru
 p_tqdm==1.4.0
 tqdm==4.66.1

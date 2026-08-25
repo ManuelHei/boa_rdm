@@ -7,7 +7,7 @@ For environment management, we use UV:
 uv venv --python=3.11
 source .venv/bin/activate
 uv pip install -r requirements.txt --index-strategy unsafe-best-match
-uv pip install -e scdp/ -e structures25/ -e .
+uv pip install --no-deps -e scdp/ -e structures25/ -e .
 ```
 
 BOA builds on two bundled packages, both installed by the last line above:
