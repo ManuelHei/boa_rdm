@@ -9,8 +9,8 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from mldft.ml.data.components.of_data import OFData, Representation
-from mldft.utils.molecules import build_molecule_np
+from boa.data.mldft_units import build_molecule, sample_from_molecule
+from mldft.ml.data.components.of_data import Representation
 from scdp.common.typing import assert_is_instance as aii
 from scdp.data.data import AtomicData
 from scdp.scripts.preprocess import get_atomic_number_table_from_zs
@@ -222,13 +222,13 @@ class SmallDensityDataset(Dataset):
         charges = self.atom_charges
         coords = self.atom_coords[item]
 
-        mol = build_molecule_np(
+        mol = build_molecule(
             charges=charges.numpy(),
             positions=coords.astype(np.float64),
             basis=self.basis_info.basis_dict,
         )
 
-        of_data = OFData.minimal_sample_from_mol(mol, self.basis_info)
+        of_data = sample_from_molecule(mol, self.basis_info)
 
         of_data.add_item("n_probe", torch.tensor([self.grid_coord.shape[0]]), Representation.NONE)
         of_data.add_item(
@@ -240,6 +240,10 @@ class SmallDensityDataset(Dataset):
             "n_atom", torch.tensor([len(self.atom_charges)], dtype=int), Representation.NONE
         )
         of_data.add_item("atom_types", self.atom_charges, Representation.NONE)
+        # `ChgLightningModule.test_step` reads `batch.id` unconditionally, as
+        # LmdbDataset and PyscfDataset both provide. Without it every md
+        # evaluation raises AttributeError on GlobalStorage.
+        of_data.id = f"{self.mol_name}_{item:06d}"
 
         if self.n_probe is not None:
             of_data = self.subsample_grid(of_data, self.n_probe)

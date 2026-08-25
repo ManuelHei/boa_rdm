@@ -5,6 +5,11 @@ import numpy as np
 import torch
 
 from boa.data.basis_info import BasisInfo
+from boa.data.mldft_units import (
+    build_molecule,
+    build_molecule_from_sample,
+    sample_from_molecule,
+)
 from boa.data.overlap_matrix import OverlapMatrix
 from mldft.ml.data.components.convert_transforms import (
     AddRadiusEdgeIndex as BaseAddRadiusEdgeIndex,
@@ -12,7 +17,6 @@ from mldft.ml.data.components.convert_transforms import (
 from mldft.ml.data.components.convert_transforms import apply_to_attributes, dtype_map
 from mldft.ml.data.components.of_data import OFData, Representation
 from mldft.ofdft.basis_integrals import get_overlap_matrix
-from mldft.utils.molecules import build_molecule_np, build_molecule_ofdata
 
 
 class MasterTransform:
@@ -50,10 +54,10 @@ class ConvertToOFData:
         self.basis_info = basis_info
 
     def __call__(self, sample):
-        mol = build_molecule_np(
+        mol = build_molecule(
             charges=sample.atom_types, positions=sample.coords, basis=self.basis_info.basis_dict
         )
-        of_data = OFData.minimal_sample_from_mol(mol, self.basis_info)
+        of_data = sample_from_molecule(mol, self.basis_info)
 
         of_data.add_item("n_probe", sample.n_probe, Representation.NONE)
         of_data.add_item("probe_coords", sample.probe_coords, Representation.NONE)
@@ -84,7 +88,7 @@ class AddMessagePassingMatrix:
         Args:
             sample: the molecule in the OFData format
         """
-        mol = build_molecule_ofdata(sample, self.basis_info.basis_dict)
+        mol = build_molecule_from_sample(sample, self.basis_info.basis_dict)
         mol_aux = mol.copy()
 
         basis_dict = mol_aux.basis
