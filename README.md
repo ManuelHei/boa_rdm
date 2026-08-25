@@ -85,9 +85,8 @@ python boa/test.py eval=<your_eval>
 
 ## Pretrained checkpoints
 
-Trained models for every dataset in the paper are on the Hugging Face Hub at
-[**sciai-lab/boa**](https://huggingface.co/sciai-lab/boa), together with a model
-card listing the test error of each.
+Trained models for every dataset in the paper are on Hugging Face at
+[**sciai-lab/boa**](https://huggingface.co/sciai-lab/boa).
 
 ```python
 # pip install huggingface_hub
