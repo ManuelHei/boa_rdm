@@ -82,3 +82,18 @@ python boa/train.py experiment=<your_experiment>
 ```bash
 python boa/test.py eval=<your_eval>
 ```
+
+## Pretrained checkpoints
+
+Trained models for every dataset in the paper are on the Hugging Face Hub at
+[**sciai-lab/boa**](https://huggingface.co/sciai-lab/boa), together with a model
+card listing the test error of each.
+
+```python
+# pip install huggingface_hub
+from huggingface_hub import hf_hub_download
+from boa.model.module import ChgLightningModule
+
+ckpt = hf_hub_download("sciai-lab/boa", "qm9_pyscf_large.ckpt")
+model = ChgLightningModule.load_from_checkpoint(ckpt).eval()
+```
