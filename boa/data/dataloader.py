@@ -1,8 +1,14 @@
 from typing import List, Optional
 
+from torch.utils.data import DataLoader
 from torchdata.stateful_dataloader import StatefulDataLoader
 
 from boa.data.of_batch import OFCollater
+
+
+def qmlearn_collate(batch):
+    """Keep each field as a list; gamma/hamiltonian sizes vary by molecule."""
+    return {key: [sample[key] for sample in batch] for key in batch[0]}
 
 
 class ProbeCollater(OFCollater):
@@ -57,5 +63,22 @@ class ProbeDataLoader(StatefulDataLoader):
             batch_size,
             shuffle,
             collate_fn=ProbeCollater(follow_batch, exclude_keys, list_keys, n_probe),
+            **kwargs,
+        )
+
+
+class QMLearnDataLoader(DataLoader):
+    """Batches QMLearn dict samples. Drops PyG-only kwargs from the datamodule."""
+
+    def __init__(self, dataset, batch_size=1, shuffle=False, **kwargs):
+        kwargs.pop("collate_fn", None)
+        kwargs.pop("follow_batch", None)
+        kwargs.pop("exclude_keys", None)
+        kwargs.pop("list_keys", None)
+        super().__init__(
+            dataset,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            collate_fn=qmlearn_collate,
             **kwargs,
         )

@@ -11,8 +11,8 @@ from omegaconf import DictConfig
 from torch.utils.data import Dataset, Subset
 from tqdm import tqdm
 
-from boa.data.dataloader import ProbeDataLoader
-from boa.data.dataset import LmdbDataset, PyscfDataset
+from boa.data.dataloader import ProbeDataLoader, QMLearnDataLoader
+from boa.data.dataset import LmdbDataset, PyscfDataset, QMLearnDataset
 from scdp.common.pyg import DataLoader
 
 
@@ -61,7 +61,12 @@ class DataModule(pl.LightningDataModule):
         construct datasets and assign data scalers.
         """
         self.dataset = hydra.utils.instantiate(self.dataset)
-        if isinstance(self.dataset, (LmdbDataset, PyscfDataset)):
+        if isinstance(self.dataset, QMLearnDataset):
+            self.train_dataset = Subset(self.dataset, self.splits["train"])
+            self.val_dataset = Subset(self.dataset, self.splits["validation"])
+            self.test_dataset = Subset(self.dataset, self.splits["test"])
+            self.metadata = {}
+        elif isinstance(self.dataset, (LmdbDataset, PyscfDataset)):
             self.train_dataset = Subset(self.dataset, self.splits["train"])
             self.val_dataset = Subset(self.dataset, self.splits["validation"])
             self.test_dataset = Subset(self.dataset, self.splits["test"])
@@ -157,34 +162,31 @@ class DataModule(pl.LightningDataModule):
                     transform.n_probe = n_probe
         return metadata
 
-    def train_dataloader(self, shuffle=True):
-        return DataLoader(
-            self.train_dataset,
+    def _dataloader(self, dataset, shuffle, batch_size, num_workers):
+        kwargs = dict(
+            dataset=dataset,
             shuffle=shuffle,
-            batch_size=self.batch_size.train,
-            num_workers=self.num_workers.train,
+            batch_size=batch_size,
+            num_workers=num_workers,
             worker_init_fn=worker_init_fn,
-            **self.dataloader_kwargs,
+        )
+        if isinstance(self.dataset, QMLearnDataset):
+            return QMLearnDataLoader(**kwargs)
+        return DataLoader(**kwargs, **self.dataloader_kwargs)
+
+    def train_dataloader(self, shuffle=True):
+        return self._dataloader(
+            self.train_dataset, shuffle, self.batch_size.train, self.num_workers.train
         )
 
     def val_dataloader(self):
-        return DataLoader(
-            self.val_dataset,
-            shuffle=False,
-            batch_size=self.batch_size.val,
-            num_workers=self.num_workers.val,
-            worker_init_fn=worker_init_fn,
-            **self.dataloader_kwargs,
+        return self._dataloader(
+            self.val_dataset, False, self.batch_size.val, self.num_workers.val
         )
 
     def test_dataloader(self):
-        return DataLoader(
-            self.test_dataset,
-            shuffle=False,
-            batch_size=self.batch_size.val,
-            num_workers=self.num_workers.val,
-            worker_init_fn=worker_init_fn,
-            **self.dataloader_kwargs,
+        return self._dataloader(
+            self.test_dataset, False, self.batch_size.val, self.num_workers.val
         )
 
     def __repr__(self) -> str:
@@ -207,6 +209,8 @@ class ProbeDataModule(DataModule):
         self.n_probe = n_probe
 
     def train_dataloader(self, shuffle=True):
+        if isinstance(self.dataset, QMLearnDataset):
+            return super().train_dataloader(shuffle)
         if self.n_probe.train > 0:
             return ProbeDataLoader(
                 self.train_dataset,
@@ -228,6 +232,8 @@ class ProbeDataModule(DataModule):
             )
 
     def val_dataloader(self):
+        if isinstance(self.dataset, QMLearnDataset):
+            return super().val_dataloader()
         if self.n_probe.val > 0:
             return ProbeDataLoader(
                 self.val_dataset,
@@ -249,6 +255,8 @@ class ProbeDataModule(DataModule):
             )
 
     def test_dataloader(self):
+        if isinstance(self.dataset, QMLearnDataset):
+            return super().test_dataloader()
         if self.n_probe.test > 0:
             return ProbeDataLoader(
                 self.test_dataset,

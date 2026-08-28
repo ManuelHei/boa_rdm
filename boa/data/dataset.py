@@ -4,6 +4,7 @@ import pickle
 from pathlib import Path
 
 import ase
+import h5py
 import lmdb
 import numpy as np
 import torch
@@ -303,3 +304,57 @@ class PyscfDataset(Dataset):
         if self.transform is not None:
             data = self.transform(data)
         return data
+
+
+class QMLearnDataset(Dataset):
+    """Read one QMLearn HDF5 db: ASE atoms, gamma, and hamiltonian.
+
+    Expects the usual layout written by ``DBHDF5`` / traj2db::
+
+        <method>/<prefix>_atoms_<N>/{i}/symbols, positions, cell
+        <method>/<prefix>_props_<N>/{gamma, hamiltonian, ...}
+    """
+
+    def __init__(self, path, transform=None):
+        super().__init__()
+        self.path = Path(path)
+        self.transform = transform
+        self._h5 = None
+        with h5py.File(self.path, "r") as h5:
+            method = next(iter(h5))
+            group = h5[method]
+            atoms_name = next(name for name in group if "_atoms_" in name)
+            props_name = next(name for name in group if "_props_" in name)
+            self._atoms_key = f"{method}/{atoms_name}"
+            self._props_key = f"{method}/{props_name}"
+            self._ids = sorted(group[atoms_name].keys(), key=int)
+
+    def _file(self):
+        if self._h5 is None:
+            self._h5 = h5py.File(self.path, "r")
+        return self._h5
+
+    def __len__(self):
+        return len(self._ids)
+
+    def __getitem__(self, idx):
+        h5 = self._file()
+        group = h5[self._atoms_key][self._ids[idx]]
+        sample = {
+            "atoms": ase.Atoms(
+                group["symbols"][()].astype(str),
+                positions=group["positions"][()],
+                cell=group["cell"][()],
+            ),
+            "gamma": np.asarray(h5[self._props_key]["gamma"][idx]),
+            "hamiltonian": np.asarray(h5[self._props_key]["hamiltonian"][idx]),
+        }
+        if self.transform is not None:
+            sample = self.transform(sample)
+        return sample
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state["_h5"] = None
+        return state
+
