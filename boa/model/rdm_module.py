@@ -193,9 +193,6 @@ class RDMLightningModule(LightningModule):
         rdm = rdm.view(n_mol, pad, pad)[:, :n_ao, :n_ao]
 
         if self.symmetrize:
-            # Only the symmetric part is physical: rho(x) sees D and D^T alike,
-            # so the antisymmetric part is unobservable and the reference is
-            # symmetric by construction.
             rdm = 0.5 * (rdm + rdm.transpose(1, 2))
 
         rdm = rdm * self.scale
