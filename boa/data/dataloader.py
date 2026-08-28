@@ -13,7 +13,17 @@ def qmlearn_collate(batch):
 
 class ProbeCollater(OFCollater):
     def __init__(self, follow_batch, exclude_keys, list_keys, n_probe=200):
-        super().__init__(follow_batch, exclude_keys, list_keys)
+        # OFCollater takes `dataset` as its first positional parameter, so
+        # forwarding these three positionally shifted every one of them a slot
+        # left: `list_keys` fell off the end (always None) and instead landed in
+        # `exclude_keys`, which made `collate` drop exactly the keys it was asked
+        # to list-collate. Pass by keyword. `dataset` is unused by OFCollater.
+        super().__init__(
+            None,
+            follow_batch=follow_batch,
+            exclude_keys=exclude_keys,
+            list_keys=list_keys,
+        )
         self.n_probe = n_probe
 
     def __call__(self, batch):

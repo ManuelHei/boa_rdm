@@ -1,0 +1,29 @@
+_target_: boa.model.rdm_module.RDMLightningModule
+
+# mse | mae | huber, applied elementwise to the density matrix
+criterion: mse
+huber_delta: 1.0
+
+# Only the symmetric part of D is physical, and the reference is symmetric.
+symmetrize: true
+
+# Output scale on the predicted matrix.
+scale_factor: 1.0
+
+# Batch key holding the reference density matrix, (n_ao, n_ao) per sample in
+# the AO ordering of basis_info.basis_dict.
+target_key: rdm
+
+# tr(D S) as a sanity metric. Needs AddMessagePassingMatrix with
+# remove_diagonal: False, otherwise the trace is not the electron count.
+log_electron_count: false
+
+log_train_metrics_interval: 10
+
+dft_basis_set: ${data.basis_info.basis}
+dft_wt_aug: ${data.basis_info.even_tempered}
+
+basis_info: ${data.basis_info}
+
+defaults:
+  - net: boa
