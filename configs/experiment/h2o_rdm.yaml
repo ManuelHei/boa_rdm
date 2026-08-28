@@ -1,0 +1,26 @@
+# @package _global_
+
+# First density-matrix training run: 1000 geometries of H2O from the QMLearn
+# hackathon db, gamma as the target, no grid anywhere.
+
+defaults:
+  - override /data: qmlearn
+  - override /model: rdm
+  - override /trainer: default
+
+name: h2o_rdm
+
+# Pre-training is skipped deliberately, not for speed. The initial-guess module
+# is atom-block-diagonal and rank-1 per block, which caps it at 33% of
+# ||D||_F^2 -- a rel_fro floor of 0.816. Predicting the mean gamma over the
+# training set already reaches rel_fro 0.043, so the warm start is far worse
+# than a constant on this dataset and would only move the weights away from it.
+initial_guess_pre_training_steps: 0
+
+trainer:
+  max_steps: 20000
+
+# Baseline to beat: rel_fro = 0.0428, from predicting the training-set mean
+# gamma. The targets barely move across these geometries (||gamma||_F spans
+# 3.174-3.238), so any rel_fro above that is worse than a constant predictor.
+# Read rel_fro/val against 0.0428, not against zero.

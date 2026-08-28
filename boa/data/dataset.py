@@ -307,19 +307,36 @@ class PyscfDataset(Dataset):
 
 
 class QMLearnDataset(Dataset):
-    """Read one QMLearn HDF5 db: ASE atoms, gamma, and hamiltonian.
+    """Read one QMLearn HDF5 db into :class:`OFData` samples.
 
     Expects the usual layout written by ``DBHDF5`` / traj2db::
 
         <method>/<prefix>_atoms_<N>/{i}/symbols, positions, cell
         <method>/<prefix>_props_<N>/{gamma, hamiltonian, ...}
+
+    ``gamma`` is the one-particle density matrix in the AO basis of the
+    molecule's own basis set, in pyscf's ordering, so it is attached verbatim as
+    ``rdm`` for :class:`boa.model.rdm_module.RDMLightningModule` -- no
+    reordering. That only holds if ``basis_info`` describes the same basis the
+    db was built with (recorded in the file under ``<method>/qmmol/basis``), so
+    the AO count is checked against ``gamma`` on construction.
+
+    Only ``gamma`` is required. ``hamiltonian`` and any other entry of the props
+    group are attached when present and skipped otherwise; the PBE db shipped
+    with the 2026 hackathon has ``gamma`` alone.
     """
 
-    def __init__(self, path, transform=None):
+    #: props that are per-sample matrices in the AO basis, attached if present
+    MATRIX_PROPS = ("gamma", "hamiltonian")
+
+    def __init__(self, path, basis_info, transform=None, rdm_key="gamma"):
         super().__init__()
         self.path = Path(path)
+        self.basis_info = basis_info
         self.transform = transform
+        self.rdm_key = rdm_key
         self._h5 = None
+
         with h5py.File(self.path, "r") as h5:
             method = next(iter(h5))
             group = h5[method]
@@ -328,6 +345,31 @@ class QMLearnDataset(Dataset):
             self._atoms_key = f"{method}/{atoms_name}"
             self._props_key = f"{method}/{props_name}"
             self._ids = sorted(group[atoms_name].keys(), key=int)
+            self.props = [k for k in self.MATRIX_PROPS if k in group[props_name]]
+            if self.rdm_key not in self.props:
+                raise KeyError(
+                    f"'{self.rdm_key}' not found in {self._props_key}; it holds "
+                    f"{list(group[props_name])}."
+                )
+            n_ao = group[props_name][self.rdm_key].shape[-1]
+            charges, positions = self._geometry(group[atoms_name][self._ids[0]])
+
+        # A silent AO mismatch would corrupt every target, so check it once here
+        # rather than letting the shapes disagree deep inside the loss.
+        mol = build_molecule(
+            charges=charges, positions=positions, basis=self.basis_info.basis_dict
+        )
+        if mol.nao_nr() != n_ao:
+            raise ValueError(
+                f"basis_info gives {mol.nao_nr()} AOs but '{self.rdm_key}' is {n_ao} wide. "
+                f"Point basis_info at the basis the db was built with."
+            )
+
+    @staticmethod
+    def _geometry(group):
+        symbols = group["symbols"][()].astype(str)
+        charges = np.array([ase.data.atomic_numbers[s] for s in symbols])
+        return charges, group["positions"][()]
 
     def _file(self):
         if self._h5 is None:
@@ -339,22 +381,33 @@ class QMLearnDataset(Dataset):
 
     def __getitem__(self, idx):
         h5 = self._file()
-        group = h5[self._atoms_key][self._ids[idx]]
-        sample = {
-            "atoms": ase.Atoms(
-                group["symbols"][()].astype(str),
-                positions=group["positions"][()],
-                cell=group["cell"][()],
-            ),
-            "gamma": np.asarray(h5[self._props_key]["gamma"][idx]),
-            "hamiltonian": np.asarray(h5[self._props_key]["hamiltonian"][idx]),
-        }
+        charges, positions = self._geometry(h5[self._atoms_key][self._ids[idx]])
+
+        mol = build_molecule(
+            charges=charges, positions=positions, basis=self.basis_info.basis_dict
+        )
+        of_data = sample_from_molecule(mol, self.basis_info)
+
+        props = h5[self._props_key]
+        for name in self.props:
+            key = "rdm" if name == self.rdm_key else name
+            of_data.add_item(
+                key,
+                torch.as_tensor(np.asarray(props[name][idx]), dtype=torch.get_default_dtype()),
+                Representation.NONE,
+            )
+
+        of_data.add_item("n_atom", torch.tensor([len(charges)], dtype=int), Representation.NONE)
+        of_data.add_item("atom_types", torch.as_tensor(charges), Representation.NONE)
+        of_data.id = f"{self.path.stem}_{self._ids[idx]}"
+
         if self.transform is not None:
-            sample = self.transform(sample)
-        return sample
+            of_data = self.transform(of_data)
+        return of_data
 
     def __getstate__(self):
+        # h5py handles do not survive being pickled to a dataloader worker;
+        # _file() reopens lazily in the child.
         state = self.__dict__.copy()
         state["_h5"] = None
         return state
-

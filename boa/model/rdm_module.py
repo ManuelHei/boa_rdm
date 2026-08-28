@@ -51,6 +51,7 @@ untested.
 
 import logging
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 from hydra.utils import instantiate
@@ -76,6 +77,8 @@ class RDMLightningModule(LightningModule):
         self.symmetrize = self._hp("symmetrize", True)
         self.huber_delta = float(self._hp("huber_delta", 1.0))
         self.log_electron_count = self._hp("log_electron_count", False)
+        self.log_matrix_images = self._hp("log_matrix_images", True)
+        self.log_matrix_images_every_n_val = int(self._hp("log_matrix_images_every_n_val", 1))
 
         if self.criterion not in ("mse", "mae", "huber"):
             raise ValueError(
@@ -295,6 +298,71 @@ class RDMLightningModule(LightningModule):
         return torch.einsum("bmn,bmn->b", rdm, overlap)
 
     # ------------------------------------------------------------------
+    # Images
+    # ------------------------------------------------------------------
+    def _tb_writer(self):
+        """The TensorBoard SummaryWriter, or None if we are not logging to one."""
+        writer = getattr(getattr(self, "logger", None), "experiment", None)
+        return writer if hasattr(writer, "add_figure") else None
+
+    @staticmethod
+    def _matrix_figure(matrix, title, vmax=None):
+        """One density-matrix panel on a zero-centred diverging scale.
+
+        The scale is symmetric about zero because the sign of a density-matrix
+        element is meaningful; a sequential map would hide it. ``vmax`` is put in
+        the title so the colour scale is readable off the image itself -- it
+        changes from step to step, and an unlabelled heatmap of a shrinking
+        error looks identical to one of a constant error.
+        """
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        matrix = matrix.detach().float().cpu().numpy()
+        if vmax is None:
+            vmax = float(np.abs(matrix).max())
+        vmax = max(vmax, 1e-12)
+
+        fig, ax = plt.subplots(figsize=(4.2, 3.6), dpi=110)
+        im = ax.imshow(matrix, cmap="RdBu_r", vmin=-vmax, vmax=vmax, interpolation="nearest")
+        ax.set_title(f"{title}  (max |x| = {vmax:.3g})", fontsize=9)
+        ax.set_xlabel("AO index", fontsize=8)
+        ax.set_ylabel("AO index", fontsize=8)
+        ax.tick_params(labelsize=7)
+        fig.colorbar(im, ax=ax, fraction=0.046)
+        fig.tight_layout()
+        return fig
+
+    def log_matrix_figures(self, pred, target, ao_mask):
+        """Log the target, the prediction and their difference as images.
+
+        Only the first molecule of the batch, on rank zero. Target and
+        prediction share one colour scale so they are directly comparable; the
+        error gets its own, since it is typically far smaller and would be
+        invisible on the shared one.
+        """
+        writer = self._tb_writer()
+        if writer is None:
+            return
+        import matplotlib.pyplot as plt
+
+        n_ao = int(ao_mask[0].sum())
+        t = target[0, :n_ao, :n_ao]
+        p = pred[0, :n_ao, :n_ao]
+        shared = max(float(t.abs().max()), float(p.abs().max()))
+
+        figures = {
+            "rdm/target": self._matrix_figure(t, "reference D", vmax=shared),
+            "rdm/prediction": self._matrix_figure(p, "predicted D", vmax=shared),
+            "rdm/error": self._matrix_figure(p - t, "predicted - reference"),
+        }
+        for tag, fig in figures.items():
+            writer.add_figure(tag, fig, global_step=self.global_step)
+            plt.close(fig)
+
+    # ------------------------------------------------------------------
     # Lightning plumbing
     # ------------------------------------------------------------------
     def forward(self, batch):
@@ -331,6 +399,16 @@ class RDMLightningModule(LightningModule):
             if n_elec is not None and n_elec_ref is not None:
                 metrics["n_electrons_err/val"] = (n_elec - n_elec_ref).abs().mean()
         self.log_dict(metrics, batch_size=n_mol, sync_dist=self.distributed)
+
+        if (
+            self.log_matrix_images
+            and batch_idx == 0
+            and self.trainer.is_global_zero
+            and self.trainer.sanity_checking is False
+            and (self.current_epoch % self.log_matrix_images_every_n_val == 0)
+        ):
+            self.log_matrix_figures(rdm, target, ao_mask)
+
         return loss
 
     def test_step(self, batch, batch_idx):

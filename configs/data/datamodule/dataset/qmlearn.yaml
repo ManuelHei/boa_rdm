@@ -1,0 +1,14 @@
+defaults:
+  - transform: qmlearn
+
+# No `_partial_` here, unlike the md datasets: DataModule.setup instantiates
+# QMLearnDataset directly and splits it by index, rather than calling it with a
+# `split=` argument.
+_target_: boa.data.dataset.QMLearnDataset
+
+path: ${paths.data_dir}/${data.dataset_name}/merge_ds.hdf5
+basis_info: ${data.basis_info}
+
+# Key in the props group holding the density matrix. Checked against the AO
+# count of basis_info on construction, so a basis mismatch fails loudly.
+rdm_key: gamma

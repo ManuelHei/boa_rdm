@@ -20,6 +20,12 @@ log_electron_count: false
 
 log_train_metrics_interval: 10
 
+# Log the reference matrix, the prediction and their difference as TensorBoard
+# images at the start of each validation epoch (first molecule of the batch).
+# Target and prediction share a colour scale; the error gets its own.
+log_matrix_images: true
+log_matrix_images_every_n_val: 1
+
 dft_basis_set: ${data.basis_info.basis}
 dft_wt_aug: ${data.basis_info.even_tempered}
 

@@ -11,7 +11,7 @@ from omegaconf import DictConfig
 from torch.utils.data import Dataset, Subset
 from tqdm import tqdm
 
-from boa.data.dataloader import ProbeDataLoader, QMLearnDataLoader
+from boa.data.dataloader import OFDataLoader, ProbeDataLoader
 from boa.data.dataset import LmdbDataset, PyscfDataset, QMLearnDataset
 from scdp.common.pyg import DataLoader
 
@@ -62,9 +62,21 @@ class DataModule(pl.LightningDataModule):
         """
         self.dataset = hydra.utils.instantiate(self.dataset)
         if isinstance(self.dataset, QMLearnDataset):
-            self.train_dataset = Subset(self.dataset, self.splits["train"])
-            self.val_dataset = Subset(self.dataset, self.splits["validation"])
-            self.test_dataset = Subset(self.dataset, self.splits["test"])
+            if getattr(self, "splits", None) is not None:
+                self.train_dataset = Subset(self.dataset, self.splits["train"])
+                self.val_dataset = Subset(self.dataset, self.splits["validation"])
+                self.test_dataset = Subset(self.dataset, self.splits["test"])
+            else:
+                # No split file: hold out 10% for validation and reuse it as
+                # test, matching what the md path does.
+                n_val = int(0.1 * len(self.dataset))
+                n_train = len(self.dataset) - n_val
+                self.train_dataset, self.val_dataset = torch.utils.data.random_split(
+                    self.dataset,
+                    [n_train, n_val],
+                    generator=torch.Generator().manual_seed(42),
+                )
+                self.test_dataset = self.val_dataset
             self.metadata = {}
         elif isinstance(self.dataset, (LmdbDataset, PyscfDataset)):
             self.train_dataset = Subset(self.dataset, self.splits["train"])
@@ -170,9 +182,10 @@ class DataModule(pl.LightningDataModule):
             num_workers=num_workers,
             worker_init_fn=worker_init_fn,
         )
-        if isinstance(self.dataset, QMLearnDataset):
-            return QMLearnDataLoader(**kwargs)
-        return DataLoader(**kwargs, **self.dataloader_kwargs)
+        # OFDataLoader, not scdp's DataLoader: every dataset here yields OFData,
+        # which a generic collater refuses outright, and OFCollater is what
+        # zero-pads and stacks `message_passing_matrix` per molecule.
+        return OFDataLoader(**kwargs, **self.dataloader_kwargs)
 
     def train_dataloader(self, shuffle=True):
         return self._dataloader(
@@ -180,9 +193,7 @@ class DataModule(pl.LightningDataModule):
         )
 
     def val_dataloader(self):
-        return self._dataloader(
-            self.val_dataset, False, self.batch_size.val, self.num_workers.val
-        )
+        return self._dataloader(self.val_dataset, False, self.batch_size.val, self.num_workers.val)
 
     def test_dataloader(self):
         return self._dataloader(
@@ -209,8 +220,6 @@ class ProbeDataModule(DataModule):
         self.n_probe = n_probe
 
     def train_dataloader(self, shuffle=True):
-        if isinstance(self.dataset, QMLearnDataset):
-            return super().train_dataloader(shuffle)
         if self.n_probe.train > 0:
             return ProbeDataLoader(
                 self.train_dataset,
@@ -232,8 +241,6 @@ class ProbeDataModule(DataModule):
             )
 
     def val_dataloader(self):
-        if isinstance(self.dataset, QMLearnDataset):
-            return super().val_dataloader()
         if self.n_probe.val > 0:
             return ProbeDataLoader(
                 self.val_dataset,
@@ -255,8 +262,6 @@ class ProbeDataModule(DataModule):
             )
 
     def test_dataloader(self):
-        if isinstance(self.dataset, QMLearnDataset):
-            return super().test_dataloader()
         if self.n_probe.test > 0:
             return ProbeDataLoader(
                 self.test_dataset,

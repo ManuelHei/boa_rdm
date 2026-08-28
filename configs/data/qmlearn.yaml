@@ -1,0 +1,16 @@
+defaults:
+  - datamodule: qmlearn
+
+dataset_name: qmlearn
+
+# Must match the basis the db was built with -- recorded in the file under
+# rks/qmmol/basis. Contracted, not even-tempered: 6-31g* gives cond(S) = 53 for
+# H2O, where the uncontracted def2-qzvppd used by the md configs gives 3e7 and
+# leaves the density matrix poorly determined.
+basis_info:
+  _target_: boa.data.basis_info.BasisInfo.from_atomic_numbers_with_even_tempered_basis
+  basis: '6-31g*'
+  atomic_numbers: [1, 8]
+  beta: None
+  even_tempered: false
+  uncontracted: false
