@@ -1,0 +1,38 @@
+# Density-matrix prediction with the HELM backbone. Identical to `rdm.yaml`
+# in loss, metrics and logging -- only the net and the module that reads it
+# differ, so runs are directly comparable on rel_fro.
+_target_: boa.model.helm_rdm_module.HelmRDMLightningModule
+
+# mse | mae | huber, applied elementwise to the density matrix
+criterion: mse
+huber_delta: 1.0
+
+# Only the symmetric part of D is physical, and the reference is symmetric.
+symmetrize: true
+
+# Output scale on the predicted matrix.
+scale_factor: 1.0
+
+# Batch key holding the reference density matrix, (n_ao, n_ao) per sample in
+# the AO ordering of basis_info.basis_dict.
+target_key: rdm
+
+# tr(D S) as a sanity metric. Needs AddMessagePassingMatrix with
+# remove_diagonal: False, otherwise the trace is not the electron count.
+log_electron_count: false
+
+log_train_metrics_interval: 10
+
+# Log the reference matrix, the prediction and their difference as TensorBoard
+# images at the start of each validation epoch (first molecule of the batch).
+# Target and prediction share a colour scale; the error gets its own.
+log_matrix_images: true
+log_matrix_images_every_n_val: 1
+
+dft_basis_set: ${data.basis_info.basis}
+dft_wt_aug: ${data.basis_info.even_tempered}
+
+basis_info: ${data.basis_info}
+
+defaults:
+  - net: helm

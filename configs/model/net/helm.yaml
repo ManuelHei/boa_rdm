@@ -1,0 +1,27 @@
+_target_: boa.model.net.helm_net.HelmRDM
+
+basis_info: ${model.basis_info}
+
+# Widths. HELM's own configs run 128 channels; 64 keeps a water run small
+# enough to iterate on and is already far wider than the BOA stack (32).
+sphere_channels: 64
+hidden_channels: 64
+edge_channels: 64
+num_distance_basis: 64
+num_layers: 3
+
+# lmax defaults to 2*max(l) of the basis, the lowest degree that can represent
+# every shell-pair block (4 for a basis with d functions). mmax follows lmax.
+lmax: null
+mmax: null
+
+# The graph itself comes from the transform -- `edge_index` is the radius-3.0 A
+# graph. HELM puts the gaussian expansion range at roughly twice the graph
+# cutoff so the longest edges still fall inside it.
+gaussian_cutoff: 6.0
+gaussian_width: 1.0
+edge_index_key: edge_index
+
+# 'triton' is the fused Wigner kernel; 'torch' is the portable path.
+wigner_backend: torch
+norm_type: rms_norm_sh

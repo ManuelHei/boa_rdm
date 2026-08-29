@@ -42,6 +42,8 @@ known_first_party = ["scdp", "mldft"]
 exclude = [
     "scdp/",
     "structures25/",
+    # Vendored verbatim from maloq; kept diffable against upstream.
+    "boa/model/net/helm/",
 ]
 line-length = 99
 

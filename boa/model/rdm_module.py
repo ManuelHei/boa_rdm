@@ -175,10 +175,28 @@ class RDMLightningModule(LightningModule):
                 "the 'a' and 'b' halves of the bilinear expansion."
             )
 
-        ao_index, n_ao_per_mol, n_ao = self.ao_layout(batch)
-
         a, b = coeffs.chunk(2, dim=-1)  # each (n_edge, max_basis_dim, R)
         blocks = torch.einsum("emr,enr->emn", a, b)  # (n_edge, max_basis_dim, max_basis_dim)
+        return self.scatter_blocks(batch, blocks, edge_index)
+
+    def scatter_blocks(self, batch, blocks: Tensor, edge_index: Tensor) -> tuple[Tensor, Tensor]:
+        """Place one dense block per edge into a batched density matrix.
+
+        Split out of :meth:`build_rdm` so a net that predicts the blocks
+        directly -- :class:`boa.model.net.helm_net.HelmRDM` -- can reuse the
+        placement, the padding sink and the symmetrisation without going through
+        the bilinear coefficient construction.
+
+        Args:
+            blocks: ``(n_edge, max_basis_dim, max_basis_dim)``. Entries beyond an
+                atom's own AO count are ignored, not required to be zero.
+            edge_index: ``(2, n_edge)``. Repeated pairs accumulate.
+
+        Returns:
+            rdm: ``(n_mol, n_ao, n_ao)``.
+            ao_mask: ``(n_mol, n_ao)``, ``True`` on real AOs.
+        """
+        ao_index, n_ao_per_mol, n_ao = self.ao_layout(batch)
 
         rows = ao_index[edge_index[0]]  # (n_edge, max_basis_dim)
         cols = ao_index[edge_index[1]]
@@ -366,8 +384,7 @@ class RDMLightningModule(LightningModule):
     # Lightning plumbing
     # ------------------------------------------------------------------
     def forward(self, batch):
-        coeffs, edge_index = self.model(batch)
-        rdm, ao_mask = self.build_rdm(batch, coeffs, edge_index)
+        rdm, ao_mask = self.predict_rdm(batch)
         target = self.get_target(batch, rdm.shape[-1], rdm.shape[0], like=rdm)
         loss = self.compute_loss(rdm, target, ao_mask)
         return loss, rdm, target, ao_mask

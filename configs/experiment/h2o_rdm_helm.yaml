@@ -1,0 +1,30 @@
+# @package _global_
+
+# HELM on the same task as `h2o_rdm`: 1000 H2O geometries from the QMLearn
+# hackathon db, gamma as the target, no grid anywhere. Same data, same loss,
+# same metric, so rel_fro/val is directly comparable between the two.
+
+defaults:
+  - override /data: qmlearn
+  - override /model: rdm_helm
+  - override /trainer: default
+
+name: h2o_rdm_helm
+
+# No pre-training. It exists for BOA because its density matrix is a product of
+# two learned factors and needs the initial-guess channel put on a calibrated
+# scale first. HELM predicts each block as a linear map of equivariant features,
+# so there is no product to run away, and the net carries no
+# `initial_guess_module` for the pre-training loop to train.
+initial_guess_pre_training_steps: 0
+
+trainer:
+  max_steps: 20000
+
+optim:
+  lr: 1e-4
+
+# Baseline to beat: rel_fro = 0.0428, from predicting the training-set mean
+# gamma. The targets barely move across these geometries (||gamma||_F spans
+# 3.174-3.238), so any rel_fro above that is worse than a constant predictor.
+# BOA reached 0.4205 on this split (run 029, lr 1e-5, 20k steps).
