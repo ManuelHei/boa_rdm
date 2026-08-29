@@ -55,6 +55,32 @@ Both were checked against pyscf directly: building the block-diagonal rotation
 from these conventions reproduces ``mol.intor("int1e_ovlp")`` of a rotated
 molecule from the unrotated one, d functions included.
 
+Parity, and why every irrep here is declared even
+-------------------------------------------------
+The physical parity of the ``L`` component of the block between shells ``l1``
+and ``l2`` is :math:`(-1)^{l_1 + l_2}` -- it comes from the two basis functions,
+not from ``L``. So the s-p and p-d blocks are genuinely *odd*, and declaring
+them ``(L, 1)`` as this head does is not the physically correct label.
+
+It is, however, the only self-consistent one, because the backbone has no parity
+to offer. eSEN carries a single feature per ``(l, m)``, shape
+``(n, (lmax+1)^2, C)``, with no parity index -- it is an SO(3) architecture, as
+eSCN and EquiformerV2 are. Declaring the head's outputs with their true parity
+while the input stays parity-less does not *add* a symmetry; ``o3.Linear`` finds
+no path from an even input to an odd output and silently emits zero. Measured:
+every s-p and p-d component becomes structurally unreachable, and those blocks
+carry 31% of the norm of the H2O target -- the same failure that caps BOA,
+relocated.
+
+Enforcing parity properly is an architecture change, not a relabelling: the
+features would have to carry both parities at each degree (``0e + 0o + 1e + 1o +
+...``, as NequIP and MACE do) so that both output parities have a path. What is
+lost by not doing it is a constraint, not coverage: SO(3)-equivariance is
+strictly weaker, so nothing in the target is unreachable, but the model must
+learn parity from data instead of being built with it. The trained H2O model
+obeys the physical law to 3.3e-5 against its own error of 1.8e-4 -- so roughly a
+fifth of what is left, and a bounded prize rather than a blocker.
+
 Shell padding
 -------------
 Elements carry different shells (in 6-31G*, H has ``2s`` and O has

@@ -12,11 +12,133 @@ from scdp.model.scn.smearing import GaussianSmearing
 numbers_to_element_symbols = pyscf.data.elements.ELEMENTS
 
 
+class AxialSeed(nn.Module):
+    r"""A per-atom pseudovector, seeded into the ``l = 1`` AO slots.
+
+    Why this exists
+    ---------------
+    BOA seeds features only on the ``l = 0`` slots and reaches everything else
+    through the overlap matrices, which makes the out-of-plane p coefficient of
+    a planar molecule *exactly* zero -- see
+    ``EXP-2026-08-29-03`` in the research protocol. The cause is a fixed-point
+    argument: BOA is exactly O(3)-equivariant, a planar molecule is fixed by the
+    mirror :math:`\sigma` through its own plane, so every coefficient must
+    satisfy :math:`a = \Gamma(\sigma) a` and the odd AOs are the ``-1``
+    eigenspace. Since a triatomic is planar by construction, that costs 42% of
+    :math:`\|D\|_F` on the H2O set, and it is not fixable by capacity or
+    training.
+
+    The construction
+    ----------------
+    For atom ``k`` with neighbours ``j``, bond vectors :math:`v_j`, and a
+    learned radial weight :math:`g(d_j)`:
+
+    .. math::
+
+        n_k = 2 \Big( \sum_j g(d_j)\, v_j \Big) \times \Big( \sum_j v_j \Big)
+
+    which is the neighbour-ordering-independent form of
+    :math:`\sum_{j \neq j'} [g(d_j) - g(d_{j'})]\, v_j \times v_{j'}` -- the
+    antisymmetric weighting is what makes it independent of how the neighbours
+    happen to be indexed, and it collapses to two sums, so this is O(edges) and
+    not O(degree^2).
+
+    Three properties, all of them the point:
+
+    * Under a **rotation** it transforms as an ``l = 1`` object, so writing it
+      into the ``(px, py, pz)`` slots leaves SO(3) equivariance intact.
+    * It is an **axial** vector, so under the mirror that fixes a planar
+      molecule it is *invariant* where a polar p coefficient must flip. That
+      mismatch is the deliberate parity break, and it is what removes the fixed
+      point. The model becomes SO(3)- but not O(3)-equivariant, the same trade
+      HELM already makes.
+    * It **vanishes when the neighbours are equivalent** -- exactly-C2 water,
+      where :math:`g(d_1) = g(d_2)`. That is correct rather than a limitation:
+      C2 is a *proper* rotation, so it forces the coefficient to zero for a
+      parity-breaking model too, and a seed that survived there would be wrong.
+      In this dataset ``|d1 - d2|`` averages 0.07 A, so it is generically far
+      from zero.
+
+    Only the p slots are seeded. The odd d functions (``dxy``, ``dxz``) are
+    equally unreachable but carry ~0.003 of the target against 0.82 for ``2px``,
+    so they are left for later.
+    """
+
+    def __init__(
+        self,
+        basis_info: BasisInfo,
+        channels: int = 32,
+        num_gaussians: int = 16,
+        cutoff: float = 3.0,
+    ):
+        super().__init__()
+        self.channels = channels
+        self.smearing = GaussianSmearing(0.0, cutoff, num_gaussians, 1.0)
+        self.radial = nn.Sequential(
+            nn.Linear(num_gaussians, channels),
+            nn.SiLU(),
+            nn.Linear(channels, channels),
+        )
+
+        p_slots, n_shells = [], []
+        for index in basis_info.atom_ind_to_basis_function_ind:
+            ls = basis_info.l_per_basis_func[index]
+            slots = torch.as_tensor((ls == 1).nonzero()[0], dtype=torch.long)
+            p_slots.append(slots)
+            n_shells.append(slots.numel() // 3)
+        self.n_shells = n_shells
+        for i, slots in enumerate(p_slots):
+            # pyscf orders a p shell (px, py, pz), which is what the seed writes
+            self.register_buffer(f"p_slots_{i}", slots, persistent=False)
+        self.scale = nn.Parameter(torch.randn(len(p_slots), max(max(n_shells), 1), channels))
+        self.register_buffer(
+            "atomic_numbers", torch.as_tensor(basis_info.atomic_numbers, dtype=torch.long)
+        )
+
+    def pseudovector(self, pos: Tensor, edge_index: Tensor) -> Tensor:
+        """``(n_atom, 3, channels)``, the axial vector at every atom."""
+        src, dst = edge_index[0], edge_index[1]
+        keep = src != dst  # a self-loop has no direction
+        src, dst = src[keep], dst[keep]
+
+        bond = pos[dst] - pos[src]
+        weight = self.radial(self.smearing(bond.norm(dim=-1)))  # (n_edge, channels)
+
+        n_atom = pos.shape[0]
+        total = torch.zeros(n_atom, 3, device=pos.device, dtype=pos.dtype)
+        total.index_add_(0, src, bond)
+        weighted = torch.zeros(n_atom, 3, self.channels, device=pos.device, dtype=pos.dtype)
+        weighted.index_add_(0, src, bond[:, :, None] * weight[:, None, :])
+
+        return 2.0 * torch.cross(weighted, total[:, :, None].expand_as(weighted), dim=1)
+
+    def forward(
+        self, x: Tensor, atomic_numbers: Tensor, pos: Tensor, edge_index: Tensor
+    ) -> Tensor:
+        """Add the seed to a dense ``(n_atom, max_basis_dim, channels)`` feature tensor."""
+        axial = self.pseudovector(pos, edge_index).to(x.dtype)
+        seed = torch.zeros_like(x)
+        for i, z in enumerate(self.atomic_numbers.tolist()):
+            shells = self.n_shells[i]
+            if shells == 0:
+                continue
+            rows = (atomic_numbers == z).nonzero(as_tuple=True)[0]
+            if rows.numel() == 0:
+                continue
+            slots = getattr(self, f"p_slots_{i}")
+            # (n_sel, 3, shells, C) -> shell-major, matching the slot order
+            value = axial[rows][:, :, None, :] * self.scale[i, :shells][None, None, :, :]
+            value = value.permute(0, 2, 1, 3).reshape(rows.numel(), 3 * shells, self.channels)
+            seed[rows[:, None], slots[None, :], :] = value
+        return x + seed
+
+
 class NodeEmbedding(nn.Module):
-    def __init__(self, basis_info: BasisInfo, channels: int = 32):
+    def __init__(self, basis_info: BasisInfo, channels: int = 32, axial_seed: bool = False):
         super().__init__()
         self.basis_info = basis_info
         self.channels = channels
+        self.axial = AxialSeed(basis_info, channels=channels) if axial_seed else None
 
         self.register_buffer(
             "basis_dim_per_atom",
@@ -35,10 +157,18 @@ class NodeEmbedding(nn.Module):
             len(basis_info.atomic_numbers), channels * self.scalar_dims.max().item()
         )
 
-    def forward(self, atomic_numbers: Tensor, coeff_ind_to_node_ind: Tensor) -> Tensor:
+    def forward(
+        self,
+        atomic_numbers: Tensor,
+        coeff_ind_to_node_ind: Tensor,
+        pos: Tensor | None = None,
+        edge_index: Tensor | None = None,
+    ) -> Tensor:
         """
         :param atomic_numbers: Tensor of shape (batch_size, n_atoms)
         :param x: Tensor of shape (batch_size, n_channels)
+        :param pos: atom positions, required only when the axial seed is on
+        :param edge_index: the radius graph, required only when the axial seed is on
         :return: Tensor of shape (batch_size, n_channels + n_scalar_features)
         """
         x = torch.zeros(
@@ -59,19 +189,27 @@ class NodeEmbedding(nn.Module):
                 atomic_numbers == a, : self.scalar_dims[i]
             ]
 
+        if self.axial is not None:
+            if pos is None or edge_index is None:
+                raise ValueError(
+                    "axial_seed is on but NodeEmbedding.forward got no pos/edge_index; the "
+                    "pseudovector is built from the geometry."
+                )
+            x = self.axial(x, atomic_numbers, pos, edge_index)
+
         x = x[mask]
 
         return x
 
 
 class ReducedEdgeEmbedding(nn.Module):
-    def __init__(self, basis_info: BasisInfo, channels: int = 32):
+    def __init__(self, basis_info: BasisInfo, channels: int = 32, axial_seed: bool = False):
         super().__init__()
         self.basis_info = basis_info
         self.channels = channels
 
-        self.node_embedding_a = NodeEmbedding(basis_info, channels=channels)
-        self.node_embedding_b = NodeEmbedding(basis_info, channels=channels)
+        self.node_embedding_a = NodeEmbedding(basis_info, channels=channels, axial_seed=axial_seed)
+        self.node_embedding_b = NodeEmbedding(basis_info, channels=channels, axial_seed=axial_seed)
 
     def forward(self, batch) -> Tensor:
         """
@@ -83,8 +221,12 @@ class ReducedEdgeEmbedding(nn.Module):
         atomic_numbers = batch.atomic_numbers
         coeff_ind_to_node_ind = batch.coeff_ind_to_node_ind
 
-        node_features_a = self.node_embedding_a(atomic_numbers, coeff_ind_to_node_ind)
-        node_features_b = self.node_embedding_b(atomic_numbers, coeff_ind_to_node_ind)
+        node_features_a = self.node_embedding_a(
+            atomic_numbers, coeff_ind_to_node_ind, batch.pos, edge_index
+        )
+        node_features_b = self.node_embedding_b(
+            atomic_numbers, coeff_ind_to_node_ind, batch.pos, edge_index
+        )
 
         node_features_a = to_dense_batch(
             node_features_a,
@@ -323,6 +465,7 @@ class BOA(nn.Module):
         initial_guess_module: nn.Module,
         direct_gs_prediction: bool = False,
         num_orbitals: int = 0,
+        axial_seed: bool = False,
     ) -> None:
         super().__init__()
         self.basis_info = basis_info
@@ -332,14 +475,20 @@ class BOA(nn.Module):
 
         self.direct_gs_prediction = direct_gs_prediction
         self.num_orbitals = num_orbitals
-        self.node_embedding = NodeEmbedding(basis_info, channels=self.num_channels)
-        self.edge_embedding = ReducedEdgeEmbedding(basis_info, channels=self.num_channels)
+        self.node_embedding = NodeEmbedding(
+            basis_info, channels=self.num_channels, axial_seed=axial_seed
+        )
+        self.edge_embedding = ReducedEdgeEmbedding(
+            basis_info, channels=self.num_channels, axial_seed=axial_seed
+        )
 
         self.initial_guess_module = initial_guess_module
 
     def forward(self, batch) -> Tuple[Tensor, Tensor]:
         if self.node_embedding is not None:
-            x = self.node_embedding(batch.atomic_numbers, batch.coeff_ind_to_node_ind)
+            x = self.node_embedding(
+                batch.atomic_numbers, batch.coeff_ind_to_node_ind, batch.pos, batch.edge_index
+            )
 
         edge_features = self.edge_embedding(batch)[0]
         edge_features_a, edge_features_b = (

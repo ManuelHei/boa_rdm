@@ -14,6 +14,13 @@ boa_stack:
 num_orbitals: 8
 direct_gs_prediction: True
 
+# Seed the l=1 AO slots with a per-atom pseudovector, deliberately breaking
+# parity (rotation equivariance is untouched). Off by default: with it off the
+# model is exactly O(3)-equivariant, which forces the out-of-plane p
+# coefficients of a PLANAR molecule to zero -- 42% of ||D||_F on the H2O set,
+# and unreachable at any capacity. See boa.model.net.boa_net.AxialSeed.
+axial_seed: False
+
 initial_guess_module:
   _target_: boa.model.net.boa_net.ReducedEdgeEmbedding
   basis_info: ${model.basis_info}
