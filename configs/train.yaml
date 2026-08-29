@@ -7,6 +7,7 @@ defaults:
   - optim: adam
   - lr_scheduler: cosine_annealing
   - callbacks: default
+  - pre_training_overrides: default
   - logger: tensorboard
   - _self_
   - experiment: null
@@ -17,18 +18,6 @@ name: qm9_small
 task_name: train
 
 initial_guess_pre_training_steps: 1000
-pre_training_overrides:
-  optim:
-    lr: 0.1
-  trainer:
-    max_steps: ${initial_guess_pre_training_steps}
-  model:
-    use_radial_correction: false
-  data:
-    datamodule:
-      n_probe:
-        train: 48000
-
 pre_training_replacements:
   lr_scheduler:
     _target_: torch.optim.lr_scheduler.CosineAnnealingWarmRestarts

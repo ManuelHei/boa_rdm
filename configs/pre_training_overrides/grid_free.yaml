@@ -1,0 +1,11 @@
+# Pre-training overrides for datasets with no grid (density-matrix training).
+#
+# Deliberately touches neither `data` nor `model`. The default variant sets
+# data.datamodule.n_probe, which a grid-free datamodule does not have -- merging
+# it raises `ConfigKeyError: Key 'n_probe' is not in struct` -- and
+# model.use_radial_correction, which only affects GTO evaluation and is never
+# read when the target is a density matrix.
+optim:
+  lr: 0.1
+trainer:
+  max_steps: ${initial_guess_pre_training_steps}

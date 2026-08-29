@@ -1,0 +1,13 @@
+# Overrides applied to the config used for initial-guess pre-training.
+# Grid-specific: n_probe feeds the probe-point loss and use_radial_correction
+# controls the GTO evaluation, so this variant only suits the density models.
+optim:
+  lr: 0.1
+trainer:
+  max_steps: ${initial_guess_pre_training_steps}
+model:
+  use_radial_correction: false
+data:
+  datamodule:
+    n_probe:
+      train: 48000

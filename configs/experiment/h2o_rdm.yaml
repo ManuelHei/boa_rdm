@@ -7,15 +7,20 @@ defaults:
   - override /data: qmlearn
   - override /model: rdm
   - override /trainer: default
+  # Grid-free variant: the default overrides set data.datamodule.n_probe, which
+  # the plain DataModule has no key for, so merging them raises ConfigKeyError.
+  - override /pre_training_overrides: grid_free
 
 name: h2o_rdm
 
-# Pre-training is skipped deliberately, not for speed. The initial-guess module
-# is atom-block-diagonal and rank-1 per block, which caps it at 33% of
-# ||D||_F^2 -- a rel_fro floor of 0.816. Predicting the mean gamma over the
-# training set already reaches rel_fro 0.043, so the warm start is far worse
-# than a constant on this dataset and would only move the weights away from it.
-initial_guess_pre_training_steps: 0
+# Pre-training is ON despite the warm start being a poor *predictor*: it is
+# capped at 33% of ||D||_F^2 (rel_fro floor 0.816) while the mean-gamma constant
+# reaches 0.043. The reason to keep it is conditioning, not accuracy. D is a
+# product of two learned factors, sum_r a (x) b, so scale errors compound
+# quadratically, and the first run without it diverged to rel_fro 101 in
+# fourteen steps. Pre-training puts the initial-guess channel at a calibrated
+# scale before that product can run away.
+initial_guess_pre_training_steps: 1000
 
 trainer:
   max_steps: 20000
