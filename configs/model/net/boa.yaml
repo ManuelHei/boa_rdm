@@ -21,6 +21,11 @@ direct_gs_prediction: True
 # and unreachable at any capacity. See boa.model.net.boa_net.AxialSeed.
 axial_seed: False
 
+# Also seed the odd d slots (dxy, dxz), which are unreachable for the same
+# reason. Requires axial_seed. Blindness to them alone is worth rel_fro 0.0266
+# on the H2O set, which is where the p-only runs stall.
+axial_seed_d: False
+
 initial_guess_module:
   _target_: boa.model.net.boa_net.ReducedEdgeEmbedding
   basis_info: ${model.basis_info}

@@ -2,6 +2,7 @@ from typing import Tuple
 
 import pyscf
 import torch
+from e3nn import o3
 from torch import Tensor, nn
 from torch_geometric.utils import to_dense_batch
 
@@ -59,9 +60,28 @@ class AxialSeed(nn.Module):
       In this dataset ``|d1 - d2|`` averages 0.07 A, so it is generically far
       from zero.
 
-    Only the p slots are seeded. The odd d functions (``dxy``, ``dxz``) are
-    equally unreachable but carry ~0.003 of the target against 0.82 for ``2px``,
-    so they are left for later.
+    Seeding the odd d functions
+    ---------------------------
+    ``dxy`` and ``dxz`` are odd under the same mirror and just as unreachable.
+    With ``seed_d`` they get their own seed, built by contracting the axial
+    vector with a **polar** in-plane vector :math:`w` (a bond-vector sum)
+    through :math:`3j(1, 1, 2)`:
+
+    .. math::
+
+        Q_k = n_k \otimes w_k \big|_{\ell = 2}
+
+    Axial times polar is a proper ``l = 2`` object under rotation, and under the
+    mirror it is invariant where a true d coefficient must flip -- so this is the
+    *same* single parity break as the p seed, not a second one.
+
+    On a planar molecule it lands only where it should: measured on water,
+    ``+0.084`` on ``dxy`` and ``+0.743`` on ``dxz``, and exactly zero on
+    ``dyz``, ``dz2`` and ``dx2-y2``. Those three are even, already reachable
+    through the overlap route, and seeding them would interfere rather than help.
+
+    Seeding p alone leaves a floor: blindness to the odd d functions is worth
+    ``rel_fro`` 0.0266 on the H2O set, and the p-only runs stall at 0.036.
     """
 
     def __init__(
@@ -70,9 +90,11 @@ class AxialSeed(nn.Module):
         channels: int = 32,
         num_gaussians: int = 16,
         cutoff: float = 3.0,
+        seed_d: bool = False,
     ):
         super().__init__()
         self.channels = channels
+        self.seed_d = seed_d
         self.smearing = GaussianSmearing(0.0, cutoff, num_gaussians, 1.0)
         self.radial = nn.Sequential(
             nn.Linear(num_gaussians, channels),
@@ -95,14 +117,44 @@ class AxialSeed(nn.Module):
             "atomic_numbers", torch.as_tensor(basis_info.atomic_numbers, dtype=torch.long)
         )
 
-    def pseudovector(self, pos: Tensor, edge_index: Tensor) -> Tensor:
-        """``(n_atom, 3, channels)``, the axial vector at every atom."""
+        if not seed_d:
+            return
+
+        # A second radial weighting gives the polar vector its own shape, so the
+        # d seed is not tied to the scale the p seed happens to want.
+        self.radial_polar = nn.Sequential(
+            nn.Linear(num_gaussians, channels),
+            nn.SiLU(),
+            nn.Linear(channels, channels),
+        )
+        d_slots, d_shells = [], []
+        for index in basis_info.atom_ind_to_basis_function_ind:
+            ls = basis_info.l_per_basis_func[index]
+            slots = torch.as_tensor((ls == 2).nonzero()[0], dtype=torch.long)
+            d_slots.append(slots)
+            d_shells.append(slots.numel() // 5)
+        self.d_shells = d_shells
+        for i, slots in enumerate(d_slots):
+            self.register_buffer(f"d_slots_{i}", slots, persistent=False)
+        self.scale_d = nn.Parameter(torch.randn(len(d_slots), max(max(d_shells), 1), channels))
+        # (3, 3, 5) in e3nn's axis and m ordering; m = -2..2 is also pyscf's d order
+        self.register_buffer("w3j_112", o3.wigner_3j(1, 1, 2) * 5**0.5, persistent=False)
+        # physical (x, y, z) -> the axis order e3nn's harmonics are built in
+        self.register_buffer(
+            "to_e3nn", torch.tensor([[0.0, 1, 0], [0, 0, 1], [1, 0, 0]]), persistent=False
+        )
+
+    def _bonds(self, pos: Tensor, edge_index: Tensor):
         src, dst = edge_index[0], edge_index[1]
         keep = src != dst  # a self-loop has no direction
         src, dst = src[keep], dst[keep]
-
         bond = pos[dst] - pos[src]
-        weight = self.radial(self.smearing(bond.norm(dim=-1)))  # (n_edge, channels)
+        return src, bond, self.smearing(bond.norm(dim=-1))
+
+    def pseudovector(self, pos: Tensor, edge_index: Tensor) -> Tensor:
+        """``(n_atom, 3, channels)``, the axial vector at every atom."""
+        src, bond, smeared = self._bonds(pos, edge_index)
+        weight = self.radial(smeared)  # (n_edge, channels)
 
         n_atom = pos.shape[0]
         total = torch.zeros(n_atom, 3, device=pos.device, dtype=pos.dtype)
@@ -111,6 +163,27 @@ class AxialSeed(nn.Module):
         weighted.index_add_(0, src, bond[:, :, None] * weight[:, None, :])
 
         return 2.0 * torch.cross(weighted, total[:, :, None].expand_as(weighted), dim=1)
+
+    def polar_vector(self, pos: Tensor, edge_index: Tensor) -> Tensor:
+        """``(n_atom, 3, channels)``, a radially weighted bond-vector sum.
+
+        Polar, unlike :meth:`pseudovector`: it lies in the molecular plane and
+        the mirror leaves it alone for that reason rather than by being axial.
+        """
+        src, bond, smeared = self._bonds(pos, edge_index)
+        weight = self.radial_polar(smeared)
+        out = torch.zeros(pos.shape[0], 3, self.channels, device=pos.device, dtype=pos.dtype)
+        out.index_add_(0, src, bond[:, :, None] * weight[:, None, :])
+        return out
+
+    def quadrupole(self, pos: Tensor, edge_index: Tensor) -> Tensor:
+        """``(n_atom, 5, channels)``: the ``l = 2`` part of axial (x) polar, in pyscf d order."""
+        axial = self.pseudovector(pos, edge_index)
+        polar = self.polar_vector(pos, edge_index)
+        rot = self.to_e3nn.to(axial.dtype)
+        axial = torch.einsum("ij,ajc->aic", rot, axial)
+        polar = torch.einsum("ij,ajc->aic", rot, polar)
+        return torch.einsum("ijm,aic,ajc->amc", self.w3j_112.to(axial.dtype), axial, polar)
 
     def forward(
         self, x: Tensor, atomic_numbers: Tensor, pos: Tensor, edge_index: Tensor
@@ -130,15 +203,37 @@ class AxialSeed(nn.Module):
             value = axial[rows][:, :, None, :] * self.scale[i, :shells][None, None, :, :]
             value = value.permute(0, 2, 1, 3).reshape(rows.numel(), 3 * shells, self.channels)
             seed[rows[:, None], slots[None, :], :] = value
+
+        if self.seed_d:
+            quad = self.quadrupole(pos, edge_index).to(x.dtype)
+            for i, z in enumerate(self.atomic_numbers.tolist()):
+                shells = self.d_shells[i]
+                if shells == 0:
+                    continue
+                rows = (atomic_numbers == z).nonzero(as_tuple=True)[0]
+                if rows.numel() == 0:
+                    continue
+                slots = getattr(self, f"d_slots_{i}")
+                value = quad[rows][:, :, None, :] * self.scale_d[i, :shells][None, None, :, :]
+                value = value.permute(0, 2, 1, 3).reshape(rows.numel(), 5 * shells, self.channels)
+                seed[rows[:, None], slots[None, :], :] = value
         return x + seed
 
 
 class NodeEmbedding(nn.Module):
-    def __init__(self, basis_info: BasisInfo, channels: int = 32, axial_seed: bool = False):
+    def __init__(
+        self,
+        basis_info: BasisInfo,
+        channels: int = 32,
+        axial_seed: bool = False,
+        axial_seed_d: bool = False,
+    ):
         super().__init__()
         self.basis_info = basis_info
         self.channels = channels
-        self.axial = AxialSeed(basis_info, channels=channels) if axial_seed else None
+        self.axial = (
+            AxialSeed(basis_info, channels=channels, seed_d=axial_seed_d) if axial_seed else None
+        )
 
         self.register_buffer(
             "basis_dim_per_atom",
@@ -203,13 +298,20 @@ class NodeEmbedding(nn.Module):
 
 
 class ReducedEdgeEmbedding(nn.Module):
-    def __init__(self, basis_info: BasisInfo, channels: int = 32, axial_seed: bool = False):
+    def __init__(
+        self,
+        basis_info: BasisInfo,
+        channels: int = 32,
+        axial_seed: bool = False,
+        axial_seed_d: bool = False,
+    ):
         super().__init__()
         self.basis_info = basis_info
         self.channels = channels
 
-        self.node_embedding_a = NodeEmbedding(basis_info, channels=channels, axial_seed=axial_seed)
-        self.node_embedding_b = NodeEmbedding(basis_info, channels=channels, axial_seed=axial_seed)
+        kw = {"channels": channels, "axial_seed": axial_seed, "axial_seed_d": axial_seed_d}
+        self.node_embedding_a = NodeEmbedding(basis_info, **kw)
+        self.node_embedding_b = NodeEmbedding(basis_info, **kw)
 
     def forward(self, batch) -> Tensor:
         """
@@ -466,6 +568,7 @@ class BOA(nn.Module):
         direct_gs_prediction: bool = False,
         num_orbitals: int = 0,
         axial_seed: bool = False,
+        axial_seed_d: bool = False,
     ) -> None:
         super().__init__()
         self.basis_info = basis_info
@@ -475,12 +578,13 @@ class BOA(nn.Module):
 
         self.direct_gs_prediction = direct_gs_prediction
         self.num_orbitals = num_orbitals
-        self.node_embedding = NodeEmbedding(
-            basis_info, channels=self.num_channels, axial_seed=axial_seed
-        )
-        self.edge_embedding = ReducedEdgeEmbedding(
-            basis_info, channels=self.num_channels, axial_seed=axial_seed
-        )
+        kw = {
+            "channels": self.num_channels,
+            "axial_seed": axial_seed,
+            "axial_seed_d": axial_seed_d,
+        }
+        self.node_embedding = NodeEmbedding(basis_info, **kw)
+        self.edge_embedding = ReducedEdgeEmbedding(basis_info, **kw)
 
         self.initial_guess_module = initial_guess_module
 
