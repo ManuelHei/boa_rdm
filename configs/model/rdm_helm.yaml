@@ -29,6 +29,10 @@ log_train_metrics_interval: 10
 log_matrix_images: true
 log_matrix_images_every_n_val: 1
 
+# Sorted eigenvalues of S^{1/2} γ S^{1/2} for the same molecule and cadence
+# as the heatmaps. Predicted vs reference, with lines at 0 and 2.
+log_occupation_figures: true
+
 dft_basis_set: ${data.basis_info.basis}
 dft_wt_aug: ${data.basis_info.even_tempered}
 
