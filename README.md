@@ -71,6 +71,33 @@ python scdp/scdp/scripts/preprocess.py \
 The `md` loader is adapted from
 [InfGCN](https://github.com/ccr-cheng/InfGCN-pytorch).
 
+## Density matrix prediction
+
+Besides the electron density, the same graph can be trained to predict the
+one-particle density matrix `D` directly, with no grid anywhere. The target is
+the `gamma` entry of a QMLearn HDF5 database (`dataset_name: qmlearn`,
+`$BOA_DATA/qmlearn/merge_ds.hdf5`), taken verbatim in pyscf's AO ordering, so
+`data.basis_info.basis` has to be the basis the database was built with --
+recorded in the file under `<method>/qmmol/basis`.
+
+Two models predict it, sharing the loss, the `rel_fro` metric
+(`||D - D_ref||_F / ||D_ref||_F`, the density-matrix analogue of NMAPE) and the
+matrix images logged to TensorBoard:
+
+| `model` | Experiment | Prediction |
+| --- | --- | --- |
+| `rdm` | `h2o_rdm` | BOA. Its per-edge coefficients are read as a bilinear form, so `D_uv = sum_r a_ur b_vr` -- each block is rank `num_orbitals + 1`, and no gaussian is ever evaluated. |
+| `rdm_helm` | `h2o_rdm_helm` | [HELM](https://arxiv.org/abs/2510.00224), vendored from [maloq](https://github.com/manasakani/maloq) under `boa/model/net/helm/`. Equivariant features per atom and per directed edge are mapped to full-rank blocks through the Wigner 3j symbols of each shell pair. |
+
+```bash
+python boa/train.py experiment=h2o_rdm_helm
+```
+
+`tests/test_helm_rdm.py` pins down the two orderings the HELM head depends on
+-- e3nn's axis convention and pyscf's ordering within a shell -- against pyscf's
+own overlap integrals. Both are silent if wrong, so run it after touching the
+basis or the head.
+
 ## Training
 
 ```bash
