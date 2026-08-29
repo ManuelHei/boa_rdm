@@ -21,8 +21,10 @@ initial_guess_pre_training_steps: 0
 trainer:
   max_steps: 20000
 
+# 1e-3 is Adam's default here and needs no warm start: a 250-step probe
+# already reached rel_fro 0.032, below the constant-predictor baseline.
 optim:
-  lr: 1e-4
+  lr: 1e-3
 
 # Baseline to beat: rel_fro = 0.0428, from predicting the training-set mean
 # gamma. The targets barely move across these geometries (||gamma||_F spans
