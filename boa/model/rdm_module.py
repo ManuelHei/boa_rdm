@@ -79,6 +79,7 @@ class RDMLightningModule(LightningModule):
         self.log_electron_count = self._hp("log_electron_count", False)
         self.log_matrix_images = self._hp("log_matrix_images", True)
         self.log_matrix_images_every_n_val = int(self._hp("log_matrix_images_every_n_val", 1))
+        self.log_occupation_figures = self._hp("log_occupation_figures", True)
 
         if self.criterion not in ("mse", "mae", "huber"):
             raise ValueError(
@@ -352,6 +353,23 @@ class RDMLightningModule(LightningModule):
             return None
         return torch.einsum("bmn,bmn->b", rdm, overlap)
 
+    @staticmethod
+    def occupation_numbers(rdm: Tensor, overlap: Tensor) -> Tensor:
+        """Eigenvalues of ``S^{1/2} γ S^{1/2}``, largest first.
+
+        Eigenvalues only. The eigenvectors of this sandwich live in the Löwdin
+        basis, not the AO basis, so they are not returned.
+        """
+        gamma = rdm.detach().to(dtype=torch.float64)
+        s = overlap.detach().to(dtype=torch.float64)
+        gamma = 0.5 * (gamma + gamma.T)
+        s = 0.5 * (s + s.T)
+        evals_s, u = torch.linalg.eigh(s)
+        s12 = (u * evals_s.clamp(min=1e-12).sqrt()) @ u.T
+        gtilde = s12 @ gamma @ s12
+        gtilde = 0.5 * (gtilde + gtilde.T)
+        return torch.linalg.eigvalsh(gtilde).flip(0)
+
     # ------------------------------------------------------------------
     # Images
     # ------------------------------------------------------------------
@@ -417,6 +435,110 @@ class RDMLightningModule(LightningModule):
             writer.add_figure(tag, fig, global_step=self.global_step)
             plt.close(fig)
 
+    def log_electron_traces(self, batch, pred, target):
+        """Log ``tr(D S)`` for the first molecule of the batch.
+
+        Same molecule as the heatmaps. Skips if the overlap is missing or is
+        not the full (un-zeroed) matrix.
+        """
+        n_pred = self.electron_count(batch, pred)
+        n_ref = self.electron_count(batch, target)
+        if n_pred is None or n_ref is None:
+            return
+        n_pred = float(n_pred[0])
+        n_ref = float(n_ref[0])
+        err = abs(n_pred - n_ref)
+        pylogger.info(
+            f"tr(D S)  pred={n_pred:.6f}  ref={n_ref:.6f}  |err|={err:.6f}"
+        )
+        writer = self._tb_writer()
+        if writer is None or not hasattr(writer, "add_scalar"):
+            return
+        step = self.global_step
+        writer.add_scalar("n_electrons/pred", n_pred, step)
+        writer.add_scalar("n_electrons/ref", n_ref, step)
+        writer.add_scalar("n_electrons/err", err, step)
+
+    @staticmethod
+    def _occupation_figure(occ_pred, occ_ref):
+        """Sorted occupations of predicted vs reference, with the [0, 2] bounds."""
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        occ_pred = occ_pred.detach().float().cpu().numpy()
+        occ_ref = occ_ref.detach().float().cpu().numpy()
+        index = np.arange(len(occ_pred))
+
+        fig, ax = plt.subplots(figsize=(4.2, 3.6), dpi=110)
+        ax.plot(index, occ_ref, "o-", label="reference", markersize=3.5)
+        ax.plot(index, occ_pred, "s-", label="predicted", markersize=3.5)
+        ax.axhline(0.0, color="0.4", lw=0.8, ls="--")
+        ax.axhline(2.0, color="0.4", lw=0.8, ls="--")
+        ax.set_title(r"occupations of $S^{1/2} \gamma S^{1/2}$", fontsize=9)
+        ax.set_xlabel("index (sorted)", fontsize=8)
+        ax.set_ylabel("occupation", fontsize=8)
+        ax.tick_params(labelsize=7)
+        ax.legend(fontsize=8)
+        fig.tight_layout()
+        return fig
+
+    def log_occupation_spectrum(self, batch, pred, target, ao_mask):
+        """Log the occupation spectrum of the first molecule of the batch.
+
+        Same molecule as the heatmaps and the trace. Skips if the overlap is
+        missing or is not the full (un-zeroed) matrix.
+        """
+        overlap = getattr(batch, "message_passing_matrix", None)
+        if overlap is None:
+            return
+        overlap = torch.as_tensor(overlap, dtype=pred.dtype, device=pred.device)
+        if overlap.dim() != 3 or overlap.shape[-2:] != pred.shape[-2:]:
+            return
+
+        n_ao = int(ao_mask[0].sum())
+        s = overlap[0, :n_ao, :n_ao]
+        occ_pred = self.occupation_numbers(pred[0, :n_ao, :n_ao], s)
+        occ_ref = self.occupation_numbers(target[0, :n_ao, :n_ao], s)
+
+        def _extrema(occ):
+            n_elec = float(occ.sum())
+            lo = float(occ.min())
+            hi = float(occ.max())
+            return n_elec, lo, hi, max(0.0, -lo), max(0.0, hi - 2.0)
+
+        n_p, lo_p, hi_p, below_p, above_p = _extrema(occ_pred)
+        n_r, lo_r, hi_r, below_r, above_r = _extrema(occ_ref)
+        pylogger.info(
+            f"pred: N = {n_p:.4f}, min occ = {lo_p:.3f}, max occ = {hi_p:.3f}  "
+            f"(below 0 = {below_p:.3f}, above 2 = {above_p:.3f})"
+        )
+        pylogger.info(
+            f"ref : N = {n_r:.4f}, min occ = {lo_r:.3f}, max occ = {hi_r:.3f}  "
+            f"(below 0 = {below_r:.3f}, above 2 = {above_r:.3f})"
+        )
+
+        writer = self._tb_writer()
+        if writer is None:
+            return
+        if hasattr(writer, "add_scalar"):
+            step = self.global_step
+            writer.add_scalar("occ/pred_min", lo_p, step)
+            writer.add_scalar("occ/pred_max", hi_p, step)
+            writer.add_scalar("occ/pred_below_0", below_p, step)
+            writer.add_scalar("occ/pred_above_2", above_p, step)
+            writer.add_scalar("occ/ref_min", lo_r, step)
+            writer.add_scalar("occ/ref_max", hi_r, step)
+            writer.add_scalar("occ/ref_below_0", below_r, step)
+            writer.add_scalar("occ/ref_above_2", above_r, step)
+
+        import matplotlib.pyplot as plt
+
+        fig = self._occupation_figure(occ_pred, occ_ref)
+        writer.add_figure("rdm/occupations", fig, global_step=self.global_step)
+        plt.close(fig)
+
     # ------------------------------------------------------------------
     # Lightning plumbing
     # ------------------------------------------------------------------
@@ -457,13 +579,16 @@ class RDMLightningModule(LightningModule):
         self.log_dict(metrics, batch_size=n_mol, sync_dist=self.distributed)
 
         if (
-            self.log_matrix_images
-            and batch_idx == 0
+            batch_idx == 0
             and self.trainer.is_global_zero
             and self.trainer.sanity_checking is False
             and (self.current_epoch % self.log_matrix_images_every_n_val == 0)
         ):
-            self.log_matrix_figures(rdm, target, ao_mask)
+            if self.log_matrix_images:
+                self.log_matrix_figures(rdm, target, ao_mask)
+            self.log_electron_traces(batch, rdm, target)
+            if self.log_occupation_figures:
+                self.log_occupation_spectrum(batch, rdm, target, ao_mask)
 
         return loss
 
