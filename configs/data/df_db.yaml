@@ -1,0 +1,15 @@
+defaults:
+  - datamodule: df_db
+
+dataset_name: df_db_pbe
+
+# 6-31g* in pyscf's AO ordering, exactly as the release was computed, so gamma
+# is used verbatim. Five elements, and the union shell layout is unchanged from
+# the H2O work (3s2p1d per heavy atom, max_basis_dim 14, so lmax stays 4).
+basis_info:
+  _target_: boa.data.basis_info.BasisInfo.from_atomic_numbers_with_even_tempered_basis
+  basis: '6-31g*'
+  atomic_numbers: [1, 6, 7, 8, 9]
+  beta: None
+  even_tempered: false
+  uncontracted: false

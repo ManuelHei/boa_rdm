@@ -1,0 +1,34 @@
+# As the qmlearn chain, but with an 8.0 A radius rather than 3.0.
+#
+# The cutoff was measured rather than inherited: 11.9% of ||D||_F lies beyond
+# 3.0 A on these molecules (max 27.8%) against 0.01% beyond 8.0 A, and since a
+# complete graph averages only 274 edges the whole saving from a small radius is
+# 1.9x the edge count. maloq's own configs use 6-8 A for the same reason.
+_target_: boa.data.transforms.MasterTransform
+transforms:
+  - _target_: boa.data.transforms.ToTorch
+
+  - _target_: boa.data.transforms.AddMessagePassingMatrix
+    basis_info: ${data.basis_info}
+    type: overlap
+    remove_diagonal: False
+
+  - _target_: boa.data.transforms.AddRadiusEdgeIndex
+    radius: 8.0
+    name: message_edge_index
+
+  - _target_: boa.data.transforms.AddEdgeMatrices
+    basis_info: ${data.basis_info}
+    edge_name: ${..2.name}
+    name: message_edge_matrices
+
+  - _target_: boa.data.transforms.AddRadiusEdgeIndex
+    radius: 8.0
+    name: edge_index
+
+  - _target_: boa.data.transforms.AddEdgeMatrices
+    basis_info: ${data.basis_info}
+    edge_name: ${..4.name}
+    name: edge_matrices
+
+  - _target_: boa.data.transforms.ToTorch

@@ -1,0 +1,31 @@
+# @package _global_
+
+# HELM on df_db_pbe: 18 182 molecules, C/F/H/N/O, 5-24 atoms, 50-156 AOs.
+# The first multi-molecule density-matrix run -- everything before this was one
+# molecule, where size generalisation and the graph cutoff were both untested.
+
+defaults:
+  - override /data: df_db
+  - override /model: rdm_helm
+  - override /trainer: default
+
+name: df_db_helm
+
+# HELM has no initial_guess_module; the pre-training loop is BOA-specific.
+initial_guess_pre_training_steps: 0
+
+trainer:
+  max_steps: 20000
+
+# The schedule must anneal over the actual run: the shipped T_max of 500000
+# leaves the rate flat and was worth a factor 18.7 on H2O.
+lr_scheduler:
+  T_max: ${trainer.max_steps}
+
+optim:
+  lr: 1e-3
+
+# Watch `off_graph/val` as well as `rel_fro/val`. It is the share of ||D_ref||
+# on atom pairs outside the graph, which neither model can reach, and so a hard
+# floor on rel_fro. Expected ~1e-4 at the 8.0 A radius; if it is not, the cutoff
+# is wrong and every other number is contaminated by it.

@@ -80,8 +80,11 @@ class AxialSeed(nn.Module):
     ``dyz``, ``dz2`` and ``dx2-y2``. Those three are even, already reachable
     through the overlap route, and seeding them would interfere rather than help.
 
-    Seeding p alone leaves a floor: blindness to the odd d functions is worth
-    ``rel_fro`` 0.0266 on the H2O set, and the p-only runs stall at 0.036.
+    Seeding p alone leaves a floor worth ``rel_fro`` 0.027, and the p-only runs
+    stall at 0.036. That floor is *not* the pure ``dxy``/``dxz`` block, which is
+    only 0.0009: it is the **p-d cross terms**, ``D[2px, 3dxz]`` and relatives,
+    which the p seed cannot reach because the outer product needs both factors
+    and it supplies only ``a_px``.
     """
 
     def __init__(

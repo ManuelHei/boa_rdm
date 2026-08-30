@@ -12,7 +12,7 @@ from torch.utils.data import Dataset, Subset
 from tqdm import tqdm
 
 from boa.data.dataloader import OFDataLoader, ProbeDataLoader
-from boa.data.dataset import LmdbDataset, PyscfDataset, QMLearnDataset
+from boa.data.dataset import DfDbDataset, LmdbDataset, PyscfDataset, QMLearnDataset
 from scdp.common.pyg import DataLoader
 
 
@@ -61,7 +61,9 @@ class DataModule(pl.LightningDataModule):
         construct datasets and assign data scalers.
         """
         self.dataset = hydra.utils.instantiate(self.dataset)
-        if isinstance(self.dataset, QMLearnDataset):
+        # Both are concrete datasets split by index, unlike the md path below
+        # which is a partial called with `split=`.
+        if isinstance(self.dataset, (QMLearnDataset, DfDbDataset)):
             if getattr(self, "splits", None) is not None:
                 self.train_dataset = Subset(self.dataset, self.splits["train"])
                 self.val_dataset = Subset(self.dataset, self.splits["validation"])

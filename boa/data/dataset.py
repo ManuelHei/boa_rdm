@@ -411,3 +411,119 @@ class QMLearnDataset(Dataset):
         state = self.__dict__.copy()
         state["_h5"] = None
         return state
+
+
+class DfDbDataset(Dataset):
+    """One molecule per HDF5 file, as in the ``df_db_pbe`` release.
+
+    Same internal layout as :class:`QMLearnDataset` -- ``<method>/qmmol``,
+    ``<method>/<prefix>_atoms_<N>/{i}`` and ``<method>/<prefix>_props_<N>`` --
+    but organised the other way round: one file per molecule holding a single
+    geometry, rather than one file holding many geometries of one molecule. So
+    the index runs over *files*, and the molecules differ in composition and
+    size (5-24 atoms, 50-156 AOs across C, F, H, N, O).
+
+    ``gamma`` is again taken verbatim as ``rdm``: the release is 6-31G* computed
+    with pyscf, the same basis and the same AO ordering the rest of this repo
+    assumes, so no reordering is needed. That is checked rather than trusted --
+    the AO count implied by ``basis_info`` is compared against ``gamma`` on
+    construction, which is what would catch a basis or convention mismatch.
+
+    Unlike the single-molecule sets, the graph cutoff matters here: 11.9% of
+    ``||D||_F`` lies beyond 3.0 A on average and 0.01% beyond 8.0 A, so the
+    radius belongs at 8 A or the error floor dominates. See
+    ``EXP-2026-08-30-04`` in the research protocol.
+    """
+
+    #: Only the target is read by default. ``ovlp`` and ``vext`` are also
+    #: per-molecule matrices in the release, but the overlap is recomputed from
+    #: pyscf by ``AddMessagePassingMatrix`` and ``vext`` is unused, so reading
+    #: them costs memory, triples the collation surface, and buys nothing. Ask
+    #: for them through ``extra_props`` if a use appears -- and add them to the
+    #: loader's ``list_keys``, since they vary in size between molecules too.
+    def __init__(
+        self,
+        path,
+        basis_info,
+        transform=None,
+        rdm_key="gamma",
+        pattern="*.hdf5",
+        extra_props=(),
+    ):
+        super().__init__()
+        self.root = Path(path)
+        self.basis_info = basis_info
+        self.transform = transform
+        self.rdm_key = rdm_key
+        self.paths = sorted(self.root.glob(pattern))
+        if not self.paths:
+            raise FileNotFoundError(f"No files matching '{pattern}' under {self.root}")
+
+        charges, positions, n_ao, props = self._read(self.paths[0])
+        self.props = [k for k in (rdm_key, *extra_props) if k in props]
+        if self.rdm_key not in self.props:
+            raise KeyError(
+                f"'{self.rdm_key}' not found in {self.paths[0]}; it holds {sorted(props)}."
+            )
+        mol = build_molecule(
+            charges=charges, positions=positions, basis=self.basis_info.basis_dict
+        )
+        if mol.nao_nr() != n_ao:
+            raise ValueError(
+                f"basis_info gives {mol.nao_nr()} AOs but '{self.rdm_key}' is {n_ao} wide in "
+                f"{self.paths[0].name}. Point basis_info at the basis the release was built "
+                f"with, and check its element list covers this dataset."
+            )
+
+    @staticmethod
+    def _read(path):
+        """Geometry, AO count and the available props of one file."""
+        with h5py.File(path, "r") as h5:
+            method = next(iter(h5))
+            group = h5[method]
+            atoms_name = next(name for name in group if "_atoms_" in name)
+            props_name = next(name for name in group if "_props_" in name)
+            entry = group[atoms_name][next(iter(group[atoms_name]))]
+            symbols = entry["symbols"][()].astype(str)
+            charges = np.array([ase.data.atomic_numbers[s] for s in symbols])
+            positions = entry["positions"][()]
+            props = group[props_name]
+            n_ao = props["gamma"].shape[-1]
+            return charges, positions, n_ao, set(props.keys())
+
+    def __len__(self):
+        return len(self.paths)
+
+    def __getitem__(self, idx):
+        path = self.paths[idx]
+        # Opened and closed per item rather than cached: 18k handles would
+        # exhaust the per-process limit once dataloader workers multiply them.
+        with h5py.File(path, "r") as h5:
+            method = next(iter(h5))
+            group = h5[method]
+            atoms_name = next(name for name in group if "_atoms_" in name)
+            props_name = next(name for name in group if "_props_" in name)
+            entry = group[atoms_name][next(iter(group[atoms_name]))]
+            symbols = entry["symbols"][()].astype(str)
+            positions = entry["positions"][()]
+            values = {k: np.asarray(group[props_name][k][0]) for k in self.props}
+
+        charges = np.array([ase.data.atomic_numbers[s] for s in symbols])
+        mol = build_molecule(
+            charges=charges, positions=positions, basis=self.basis_info.basis_dict
+        )
+        of_data = sample_from_molecule(mol, self.basis_info)
+        for name, value in values.items():
+            key = "rdm" if name == self.rdm_key else name
+            of_data.add_item(
+                key,
+                torch.as_tensor(value, dtype=torch.get_default_dtype()),
+                Representation.NONE,
+            )
+        of_data.add_item("n_atom", torch.tensor([len(charges)], dtype=int), Representation.NONE)
+        of_data.add_item("atom_types", torch.as_tensor(charges), Representation.NONE)
+        of_data.id = path.stem
+
+        if self.transform is not None:
+            of_data = self.transform(of_data)
+        return of_data

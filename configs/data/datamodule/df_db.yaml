@@ -1,0 +1,24 @@
+defaults:
+  - dataset: df_db
+
+_target_: boa.data.datamodule.DataModule
+
+# Disjoint molecules per split, unlike the H2O set where test aliased val.
+split_file: ${paths.data_dir}/${data.dataset_name}/datasplits.json
+
+batch_size:
+  train: 8
+  val: 8
+  test: 8
+
+num_workers:
+  train: 8
+  val: 8
+  test: 8
+
+dataloader_kwargs:
+  follow_batch: ["coeffs", "atomic_numbers"]
+  # gamma is a different size for every molecule (50-156 AOs), so it cannot be
+  # stacked; the module pads and masks it. Without this the collater raises
+  # "Sizes of tensors must match except in dimension 0".
+  list_keys: ["rdm"]

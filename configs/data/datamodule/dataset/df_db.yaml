@@ -1,0 +1,8 @@
+defaults:
+  - transform: df_db
+
+_target_: boa.data.dataset.DfDbDataset
+
+path: ${paths.data_dir}/${data.dataset_name}
+basis_info: ${data.basis_info}
+rdm_key: gamma

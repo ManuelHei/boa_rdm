@@ -300,6 +300,43 @@ class RDMLightningModule(LightningModule):
         den = ((target * mask) ** 2).sum(dim=(1, 2)).sqrt().clamp(min=1e-12)
         return num / den
 
+    def off_graph_fraction(self, batch, target: Tensor, ao_mask: Tensor) -> Tensor:
+        """Share of ``||D_ref||_F`` on AO pairs no edge reaches -- a floor on ``rel_fro``.
+
+        Both models predict blocks per graph edge, so an atom pair outside the
+        radius graph has no block at all and its entries of ``D`` are
+        structurally zero. Whatever reference density sits there is unreachable
+        error that no amount of training removes, and it is invisible in the
+        loss: the prediction is zero, the gradient is zero, and only the metric
+        moves.
+
+        On a single molecule this was always 0 and the cutoff never mattered. On
+        a set with 5-24 atoms it is 11.9% of ``||D||_F`` at the inherited 3.0 A
+        and 0.01% at 8.0 A, so it is logged rather than assumed -- if someone
+        lowers the radius, the floor appears in the metrics instead of being
+        quietly absorbed into the reported error.
+        """
+        ao_index, _, n_ao = self.ao_layout(batch)
+        edge_index = batch.edge_index
+        rows = ao_index[edge_index[0]]
+        cols = ao_index[edge_index[1]]
+        mol = batch.batch[edge_index[0]]
+
+        n_mol = int(batch.num_graphs)
+        pad = n_ao + 1
+        flat = (
+            mol[:, None, None] * pad * pad + rows[:, :, None] * pad + cols[:, None, :]
+        ).reshape(-1)
+        covered = torch.zeros(n_mol * pad * pad, dtype=torch.bool, device=target.device)
+        covered[flat] = True
+        covered = covered.view(n_mol, pad, pad)[:, :n_ao, :n_ao]
+        # the prediction is symmetrised, so a pair covered either way is reachable
+        covered = covered | covered.transpose(1, 2)
+
+        mask = ao_mask[:, :, None] & ao_mask[:, None, :]
+        total = (target * mask).pow(2).sum().sqrt().clamp(min=1e-12)
+        return (target * (mask & ~covered)).pow(2).sum().sqrt() / total
+
     def electron_count(self, batch, rdm: Tensor) -> Tensor | None:
         """``tr(D S)`` per molecule, if an untouched overlap matrix is on the batch.
 
@@ -409,6 +446,8 @@ class RDMLightningModule(LightningModule):
         metrics = {
             "loss/val": loss,
             "rel_fro/val": self.relative_frobenius(rdm, target, ao_mask).mean(),
+            # the unreachable floor, logged so a cutoff change cannot hide in it
+            "off_graph/val": self.off_graph_fraction(batch, target, ao_mask),
         }
         if self.log_electron_count:
             n_elec = self.electron_count(batch, rdm)
