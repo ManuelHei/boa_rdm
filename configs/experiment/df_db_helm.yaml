@@ -29,3 +29,11 @@ optim:
 # on atom pairs outside the graph, which neither model can reach, and so a hard
 # floor on rel_fro. Expected ~1e-4 at the 8.0 A radius; if it is not, the cutoff
 # is wrong and every other number is contaminated by it.
+
+model:
+  # tr(D S) against the reference electron count. Needs the un-zeroed overlap,
+  # which this transform provides (remove_diagonal: False), and the reference
+  # comes out at exactly 10.000000 on a spot check -- so a drift here is the
+  # prediction, not the data. Together with occ/pred_{min,max} it is the only
+  # check that the predicted matrix is physically admissible at all.
+  log_electron_count: true

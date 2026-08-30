@@ -30,6 +30,7 @@ optim:
   lr: 1e-4
 
 model:
+  log_electron_count: true
   net:
     # These lift the out-of-plane blindness, which on H2O was worth 0.42 of
     # 0.42. Here most molecules are non-planar, so the stabiliser is trivial and
