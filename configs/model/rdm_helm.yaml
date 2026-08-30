@@ -3,7 +3,12 @@
 # differ, so runs are directly comparable on rel_fro.
 _target_: boa.model.helm_rdm_module.HelmRDMLightningModule
 
-# mse | mae | huber, applied elementwise to the density matrix
+# mse | mae | huber, applied elementwise to the density matrix; or `function`,
+# the squared L2 distance between the density matrices as functions,
+#   int dr dr' (gamma - gamma_pred)^2 = tr(dD S dD S),
+# which measures the error in the metric the basis induces rather than in the
+# coordinates it is written in. `function` needs the un-zeroed overlap on the
+# batch and averages over molecules rather than elements.
 criterion: mse
 huber_delta: 1.0
 

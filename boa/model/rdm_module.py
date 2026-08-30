@@ -81,9 +81,10 @@ class RDMLightningModule(LightningModule):
         self.log_matrix_images_every_n_val = int(self._hp("log_matrix_images_every_n_val", 1))
         self.log_occupation_figures = self._hp("log_occupation_figures", True)
 
-        if self.criterion not in ("mse", "mae", "huber"):
+        if self.criterion not in ("mse", "mae", "huber", "function"):
             raise ValueError(
-                f"Unknown criterion '{self.criterion}'; expected one of 'mse', 'mae', 'huber'."
+                f"Unknown criterion '{self.criterion}'; expected one of 'mse', 'mae', "
+                f"'huber', 'function'."
             )
 
         # Number of basis functions per atom is a pure function of the element,
@@ -281,6 +282,67 @@ class RDMLightningModule(LightningModule):
     # ------------------------------------------------------------------
     # Loss and metrics
     # ------------------------------------------------------------------
+    def overlap(self, batch, like: Tensor) -> Tensor | None:
+        """The AO overlap as a dense ``(n_mol, n_ao, n_ao)`` tensor, or None.
+
+        Only usable when ``AddMessagePassingMatrix`` ran with
+        ``remove_diagonal: False``. With the diagonal blocks zeroed this is not
+        the overlap at all and every quantity built on it is wrong, so the
+        callers check the result rather than assuming it.
+        """
+        matrix = getattr(batch, "message_passing_matrix", None)
+        if matrix is None:
+            return None
+        matrix = torch.as_tensor(matrix, dtype=like.dtype, device=like.device)
+        if matrix.dim() != 3 or matrix.shape[-2:] != like.shape[-2:]:
+            return None
+        return matrix
+
+    def function_space_loss(self, batch, pred: Tensor, target: Tensor, ao_mask: Tensor) -> Tensor:
+        r"""The squared :math:`L^2` distance between the density matrices *as functions*.
+
+        .. math::
+
+            \int dr\, dr'\, \big[\gamma(r,r') - \tilde\gamma(r,r')\big]^2
+
+        With :math:`\gamma(r,r') = \sum_{\mu\nu} D_{\mu\nu}\phi_\mu(r)\phi_\nu(r')`
+        the integral factorises into two overlap matrices,
+
+        .. math::
+
+            \sum_{\mu\nu\alpha\beta} \Delta D_{\mu\nu} \Delta D_{\alpha\beta}
+            S_{\mu\alpha} S_{\nu\beta}
+            = \operatorname{tr}(\Delta D\, S\, \Delta D\, S)
+            = \lVert S^{1/2} \Delta D\, S^{1/2} \rVert_F^2 ,
+
+        so no grid and no eigendecomposition are needed -- one matmul per
+        molecule. Verified against the four-index sum to 4e-15.
+
+        The middle form is what is evaluated. The Löwdin form on the right is
+        equal but needs :math:`S^{1/2}`, and the last expression makes the
+        meaning plain: this is the elementwise error measured in the metric the
+        basis actually induces, rather than in the coordinates it happens to be
+        written in. Directions where the basis is nearly linearly dependent
+        barely change the function and are penalised accordingly, which
+        elementwise MSE cannot express.
+
+        Averaged over molecules rather than over elements, so a 156-AO molecule
+        does not outweigh a 50-AO one -- unlike :meth:`compute_loss`.
+        """
+        overlap = self.overlap(batch, like=pred)
+        if overlap is None:
+            raise ValueError(
+                "criterion 'function' needs the AO overlap on the batch as "
+                "'message_passing_matrix', shaped (n_mol, n_ao, n_ao). Add "
+                "AddMessagePassingMatrix with remove_diagonal: False to the transform."
+            )
+        mask = ao_mask[:, :, None] & ao_mask[:, None, :]
+        delta = (pred - target) * mask
+        product = delta @ (overlap * mask)
+        # tr(A A) = sum_ij A_ij A_ji; non-negative in exact arithmetic, and
+        # clamped because round-off can take it just below zero near convergence
+        return (product * product.transpose(1, 2)).sum(dim=(1, 2)).clamp(min=0).mean()
+
     def compute_loss(self, pred: Tensor, target: Tensor, ao_mask: Tensor) -> Tensor:
         mask = ao_mask[:, :, None] & ao_mask[:, None, :]
         n = mask.sum().clamp(min=1)
@@ -448,9 +510,7 @@ class RDMLightningModule(LightningModule):
         n_pred = float(n_pred[0])
         n_ref = float(n_ref[0])
         err = abs(n_pred - n_ref)
-        pylogger.info(
-            f"tr(D S)  pred={n_pred:.6f}  ref={n_ref:.6f}  |err|={err:.6f}"
-        )
+        pylogger.info(f"tr(D S)  pred={n_pred:.6f}  ref={n_ref:.6f}  |err|={err:.6f}")
         writer = self._tb_writer()
         if writer is None or not hasattr(writer, "add_scalar"):
             return
@@ -545,7 +605,10 @@ class RDMLightningModule(LightningModule):
     def forward(self, batch):
         rdm, ao_mask = self.predict_rdm(batch)
         target = self.get_target(batch, rdm.shape[-1], rdm.shape[0], like=rdm)
-        loss = self.compute_loss(rdm, target, ao_mask)
+        if self.criterion == "function":
+            loss = self.function_space_loss(batch, rdm, target, ao_mask)
+        else:
+            loss = self.compute_loss(rdm, target, ao_mask)
         return loss, rdm, target, ao_mask
 
     def training_step(self, batch, batch_idx):
