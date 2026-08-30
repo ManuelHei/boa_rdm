@@ -1,0 +1,40 @@
+# @package _global_
+
+# BOA on df_db_pbe, the counterpart to `df_db_helm`. Same data, same loss, same
+# metric and the same 8.0 A graph, so the two are directly comparable -- which
+# they were not on H2O, where BOA sat on a symmetry floor it could not leave.
+
+defaults:
+  - override /data: df_db
+  - override /model: rdm
+  - override /trainer: default
+  # Without this the default overrides set data.datamodule.n_probe, which a
+  # grid-free datamodule has no key for, and pre-training dies on
+  # ConfigKeyError. Same trap as h2o_rdm hit -- see EXP-2026-08-29-01.
+  - override /pre_training_overrides: grid_free
+
+name: df_db_boa
+
+# Kept for conditioning, as on H2O: D is a product of two learned factors, so
+# scale errors compound and the run without a warm start diverged.
+initial_guess_pre_training_steps: 1000
+
+trainer:
+  max_steps: 20000
+
+# The shipped T_max of 500000 leaves the rate flat over a 20000-step run.
+lr_scheduler:
+  T_max: ${trainer.max_steps}
+
+optim:
+  lr: 1e-4
+
+model:
+  net:
+    # These lift the out-of-plane blindness, which on H2O was worth 0.42 of
+    # 0.42. Here most molecules are non-planar, so the stabiliser is trivial and
+    # the obstruction does not bite -- but aromatic rings are near-planar, where
+    # the coefficient is O(delta) and badly conditioned rather than exactly
+    # zero. Off is the ablation worth running, not the default.
+    axial_seed: true
+    axial_seed_d: true
