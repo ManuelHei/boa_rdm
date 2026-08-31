@@ -15,10 +15,18 @@ num_layers: 3
 lmax: null
 mmax: null
 
-# The graph itself comes from the transform -- `edge_index` is the radius-3.0 A
-# graph. HELM puts the gaussian expansion range at roughly twice the graph
-# cutoff so the longest edges still fall inside it.
-gaussian_cutoff: 6.0
+# The gaussian expansion must span the graph, or the longest edges carry no
+# radial information at all: GaussianSmearing places its centres on [0, cutoff],
+# so past cutoff + a width every feature underflows to exactly zero -- not a flat
+# tail, zero. At the inherited 6.0 against the 8.0 A graph, 2.9% of edges fell
+# outside the range and 1.9% had identically-zero radial features while still
+# contributing through their direction.
+#
+# The 6.0 dated from the 3.0 A graph (the old comment called it "roughly twice
+# the graph cutoff"); the requirement is coverage, not a multiple, so this now
+# tracks `edge_radius_ang` in the transform. Going wider would only spend basis
+# functions on distances the graph never produces.
+gaussian_cutoff: 8.0
 gaussian_width: 1.0
 edge_index_key: edge_index
 
