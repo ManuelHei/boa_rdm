@@ -10,21 +10,30 @@ same thing in each.
 
 Usage::
 
-    .venv/bin/python boa/eval_energy.py \\
-        --run /export/data/.../115_dfdb_helm_w128_... \\
-        --n 100 --split validation
+    .venv/bin/python boa/eval_energy.py --run 115 --n 100 --split validation
 
-``--plot res_50.png`` additionally writes an error histogram and an
-error-versus-size scatter for each of the three observables the run computes;
-``--plot-props energy`` narrows that. ``--from-json res_50.json`` draws the same
-figure from a results file written earlier, without loading the model or the
-dataset.
+``--run`` takes a run id, a run directory name or a full path; a bare id is
+resolved against ``$BOA_MODELS/train/runs``. Its ``config.yaml`` and best
+checkpoint are read from there.
 
-``--run`` takes a run directory (its ``config.yaml`` and best checkpoint are read
-from it). ``--baseline`` additionally reports the energy of the *reference*
-matrix, which should reproduce the stored value to ~1e-7 Ha; if it does not,
-something about the basis or the AO ordering is wrong and the model numbers below
-it mean nothing.
+Results go to two standard places, named ``<run>__<split>_<n>``::
+
+    $BOA_MODELS/eval/json/115_dfdb_helm_w128_devices-1__validation_100.json
+    $BOA_MODELS/eval/plots/115_dfdb_helm_w128_devices-1__validation_100.pdf
+
+so every run's numbers and figures sit side by side and outlive the run
+directory. ``--out`` and ``--plot`` override either, ``--no-plot`` skips the
+figure, and ``--plot-props`` narrows it to some of the three observables.
+
+``--from-json`` redraws a figure from results written earlier, without loading
+the model or the dataset. It takes a path or, again, just the run id::
+
+    .venv/bin/python boa/eval_energy.py --from-json 115
+
+``--baseline`` additionally reports the energy of the *reference* matrix, which
+should reproduce the stored value to ~1e-7 Ha; if it does not, something about
+the basis or the AO ordering is wrong and the model numbers below it mean
+nothing.
 """
 
 from __future__ import annotations
@@ -44,9 +53,94 @@ log = logging.getLogger("eval_energy")
 HARTREE_TO_KCAL = 627.509474
 
 
+def project_env() -> None:
+    """Make ``PROJECT_ROOT`` and the ``.env`` paths available.
+
+    Training gets these from the launching environment; a standalone run of this
+    script need not have them, and the repo root is what ``PROJECT_ROOT`` always
+    means. Called before anything reads ``BOA_MODELS``.
+    """
+    from dotenv import load_dotenv
+
+    root = Path(__file__).resolve().parents[1]
+    os.environ.setdefault("PROJECT_ROOT", str(root))
+    load_dotenv(root / ".env")
+
+
+def models_root() -> Path:
+    """``BOA_MODELS``: where runs and their evaluations live."""
+    root = os.environ.get("BOA_MODELS")
+    if not root:
+        raise RuntimeError(
+            "BOA_MODELS is not set, so a run id cannot be resolved and the "
+            "standard output directories are unknown. Set it in .env, or pass "
+            "full paths to --run, --out and --plot."
+        )
+    return Path(root)
+
+
+def eval_dir(kind: str) -> Path:
+    """``$BOA_MODELS/eval/<kind>``, created on demand.
+
+    Results live outside the run directories so that every run's numbers and
+    figures sit side by side in one place, and so deleting a run does not take
+    its evaluation with it.
+    """
+    directory = models_root() / "eval" / kind
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+def _match_one(candidates: list[Path], spec: str, what: str) -> Path:
+    """The single match for ``spec``, or an error naming the alternatives."""
+    if len(candidates) == 1:
+        return candidates[0]
+    if not candidates:
+        raise FileNotFoundError(f"no {what} matching '{spec}'")
+    listed = "\n  ".join(q.name for q in candidates)
+    raise ValueError(f"'{spec}' matches {len(candidates)} {what}s:\n  {listed}")
+
+
+def resolve_run(spec) -> Path:
+    """A run directory from a path, a directory name, or just its leading id.
+
+    ``--run 115`` is the common case: run directories carry a unique numeric
+    prefix, and the rest of the name is the whole override string, which nobody
+    wants to type.
+    """
+    path = Path(spec)
+    if path.is_dir():
+        return path
+    root = models_root() / "train" / "runs"
+    if (root / str(spec)).is_dir():
+        return root / str(spec)
+    # A bare id must not match a longer id that starts with the same digits.
+    pattern = f"{spec}_*" if str(spec).isdigit() else f"{spec}*"
+    return _match_one(sorted(q for q in root.glob(pattern) if q.is_dir()), spec, "run")
+
+
+def resolve_results(spec) -> Path:
+    """A results JSON from a path, or from the run id whose results it holds."""
+    path = Path(spec)
+    if path.is_file():
+        return path
+    pattern = f"{spec}_*" if str(spec).isdigit() else f"{spec}*"
+    return _match_one(sorted(eval_dir("json").glob(f"{pattern}.json")), spec, "results file")
+
+
+def result_stem(run_dir: Path, split: str, n: int) -> str:
+    """Name a run's results by run, split and molecule count.
+
+    The run directory name is the run id followed by every hydra override, which
+    is far too long for a file name; everything from the second override on is
+    dropped, and the id keeps what is left unique.
+    """
+    return f"{run_dir.name.split('__')[0]}__{split}_{n or 'all'}"
+
+
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--run", type=Path, help="run directory")
+    p.add_argument("--run", help="run id (e.g. 115), directory name, or full path")
     p.add_argument("--n", type=int, default=50, help="number of molecules (0 = all)")
     p.add_argument(
         "--split", default="validation", choices=("validation", "test", "train")
@@ -58,13 +152,24 @@ def parse_args():
         action="store_true",
         help="also evaluate the reference matrix, as a sanity check on basis/ordering",
     )
-    p.add_argument("--out", type=Path, default=None, help="write per-molecule JSON here")
-    p.add_argument("--plot", type=Path, default=None, help="write the error figure here")
     p.add_argument(
-        "--from-json",
+        "--out",
         type=Path,
         default=None,
-        help="plot an existing results JSON and exit; no checkpoint or data needed",
+        help="per-molecule JSON (default: $BOA_MODELS/eval/json/<run>__<split>_<n>.json)",
+    )
+    p.add_argument(
+        "--plot",
+        type=Path,
+        default=None,
+        help="error figure (default: $BOA_MODELS/eval/plots/<run>__<split>_<n>.pdf)",
+    )
+    p.add_argument("--no-plot", action="store_true", help="skip the figure")
+    p.add_argument(
+        "--from-json",
+        default=None,
+        help="plot existing results and exit: a JSON path, or the run id that "
+        "produced one. Needs no checkpoint and no data.",
     )
     p.add_argument(
         "--plot-props",
@@ -256,17 +361,13 @@ def main():
         log.info(f"wrote {out}")
         return
 
+    args.run = resolve_run(args.run)
+    log.info(f"run: {args.run}")
+
     import hydra
-    from dotenv import load_dotenv
     from omegaconf import OmegaConf
 
     from boa.model.properties import property_errors, references_from_batch
-
-    # The stored config interpolates ${oc.env:PROJECT_ROOT} for `paths.root_dir`.
-    # Training gets it from the launching environment; a standalone run of this
-    # script need not have it, and the repo root is what it always means.
-    os.environ.setdefault("PROJECT_ROOT", str(Path(__file__).resolve().parents[1]))
-    load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
     # `paths.output_dir` / `paths.work_dir` interpolate ${hydra:runtime.*}, which
     # only resolves inside a hydra run. Nothing the datamodule or model needs
@@ -415,13 +516,15 @@ def main():
             verdict = "ok" if vals.max() < tol[key] else "TOO LARGE -- results above are meaningless"
             log.info(f"  {key:<8} max {vals.max():.2e}  {verdict}")
 
-    if args.out:
-        args.out.write_text(json.dumps(rows, indent=2))
-        log.info(f"\nwrote {args.out}")
+    stem = result_stem(args.run, args.split, args.n)
+    out = args.out or eval_dir("json") / f"{stem}.json"
+    out.write_text(json.dumps(rows, indent=2))
+    log.info(f"\nwrote {out}")
 
-    if args.plot:
-        plot_errors(rows, args.plot, props=args.plot_props, title=args.run.name)
-        log.info(f"wrote {args.plot}")
+    if not args.no_plot:
+        plot = args.plot or eval_dir("plots") / f"{stem}.pdf"
+        plot_errors(rows, plot, props=args.plot_props, title=stem)
+        log.info(f"wrote {plot}")
 
 
 if __name__ == "__main__":
