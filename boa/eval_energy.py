@@ -42,7 +42,54 @@ import argparse
 import json
 import logging
 import os
+import sys
 from pathlib import Path
+
+#: Threads and dataloader workers this script may use unless told otherwise.
+#: Eight keeps a shared node usable; pyscf will otherwise take every core it
+#: can see, which on a 128-core machine is both antisocial and slower.
+DEFAULT_CPUS = 8
+
+#: The variables every BLAS and OpenMP runtime reads *when it loads*.
+_THREAD_VARS = (
+    "OMP_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+    "VECLIB_MAXIMUM_THREADS",
+)
+
+
+def _cpus_from_argv(default: int = DEFAULT_CPUS) -> int:
+    """``--cpus`` read by hand, because argparse runs far too late.
+
+    OpenMP and the BLAS libraries size their thread pools when they are loaded,
+    and no call afterwards shrinks a pool that is already up. So the value has to
+    be in the environment before ``numpy``, ``torch`` and ``pyscf`` are imported
+    -- which is before ``main`` exists. argparse still declares the option, so
+    ``--help`` documents it and a bad value is still rejected properly.
+    """
+    argv = sys.argv[1:]
+    for i, arg in enumerate(argv):
+        if arg == "--cpus" and i + 1 < len(argv):
+            arg = f"--cpus={argv[i + 1]}"
+        if arg.startswith("--cpus="):
+            try:
+                return int(arg.split("=", 1)[1])
+            except ValueError:
+                return default  # argparse will complain about it in a moment
+    return default
+
+
+def limit_threads(cpus: int) -> None:
+    """Cap the OpenMP and BLAS thread pools. ``0`` leaves the environment alone."""
+    if cpus <= 0:
+        return
+    for var in _THREAD_VARS:
+        os.environ[var] = str(cpus)
+
+
+limit_threads(_cpus_from_argv())
 
 import numpy as np
 import torch
@@ -147,6 +194,13 @@ def parse_args():
     )
     p.add_argument("--ckpt", type=Path, default=None, help="override the checkpoint")
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    p.add_argument(
+        "--cpus",
+        type=int,
+        default=DEFAULT_CPUS,
+        help=f"CPUs to use: OpenMP/BLAS threads, pyscf threads and dataloader "
+        f"workers (default {DEFAULT_CPUS}; 0 leaves the environment alone)",
+    )
     p.add_argument(
         "--baseline",
         action="store_true",
@@ -350,14 +404,37 @@ def plot_errors(rows, out=None, props=tuple(_ERROR_COLUMNS), title=None, log="au
     return fig
 
 
+def apply_thread_limit(cpus: int) -> None:
+    """The runtime half of ``--cpus``, for the pools that can still be resized.
+
+    The environment was set at import; torch and pyscf each keep their own
+    counter on top of ``OMP_NUM_THREADS`` and are set here so the limit holds
+    however they were built.
+    """
+    if cpus <= 0:
+        return
+    torch.set_num_threads(cpus)
+    try:
+        from pyscf import lib
+
+        lib.num_threads(cpus)
+    except ImportError:  # only needed once properties are computed
+        pass
+    log.info(f"limited to {cpus} cpus")
+
+
 def main():
     args = parse_args()
+    project_env()
+    apply_thread_limit(args.cpus)
 
-    # Plotting a file that already exists needs neither the checkpoint nor the
+    # Plotting results that already exist needs neither the checkpoint nor the
     # dataset, so take that path before anything heavy is imported.
     if args.from_json is not None:
-        out = args.plot or args.from_json.with_suffix(".png")
-        plot_errors(args.from_json, out, props=args.plot_props)
+        results = resolve_results(args.from_json)
+        out = args.plot or eval_dir("plots") / f"{results.stem}.pdf"
+        plot_errors(results, out, props=args.plot_props)
+        log.info(f"read  {results}")
         log.info(f"wrote {out}")
         return
 
@@ -393,6 +470,14 @@ def main():
     if wanted:
         ds_cfg.extra_props = props + wanted
         log.info(f"added {wanted} to extra_props (absent from the run's own config)")
+
+    # Workers are processes, not threads, so the thread limit does not touch
+    # them; a run capped at 8 cpus should not then fork 8 loaders on top.
+    workers = cfg.data.datamodule.get("num_workers", None)
+    if args.cpus > 0 and workers is not None:
+        for split in list(workers.keys()):
+            if workers[split] and int(workers[split]) > args.cpus:
+                workers[split] = args.cpus
 
     datamodule = hydra.utils.instantiate(cfg.data.datamodule, _recursive_=False)
     datamodule.setup("fit" if args.split != "test" else "test")
