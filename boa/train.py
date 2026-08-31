@@ -54,6 +54,9 @@ def run(cfg: DictConfig) -> str:
     from lightning.pytorch import Callback, seed_everything
     from lightning.pytorch.loggers import TensorBoardLogger, WandbLogger
 
+    from mldft.utils.log_utils.config_in_tensorboard import (  # noqa E402
+        log_config_text_to_tensorboard,
+    )
     from scdp.common.system import log_hyperparameters  # noqa E402
 
     torch.multiprocessing.set_sharing_strategy("file_system")
@@ -117,6 +120,11 @@ def run(cfg: DictConfig) -> str:
     Path(storage_dir).mkdir(parents=True, exist_ok=True)
     (Path(storage_dir) / "config.yaml").write_text(yaml_conf)
     log_hyperparameters(cfg, model, trainer)
+    # Render the config as a tree into TensorBoard's Text tab, as mldft does. The
+    # hparams.yaml beside the events file already holds the same information, but
+    # only on disk -- this makes a run self-describing in the UI where its curves
+    # are, so runs can be told apart without going back to the directory name.
+    log_config_text_to_tensorboard(cfg, trainer)
     with open(Path(storage_dir) / "metadata.json", "w") as f:
         json.dump(metadata, f)
 
@@ -186,6 +194,9 @@ def run(cfg: DictConfig) -> str:
         pre_logger = TensorBoardLogger(**pre_cfg.logger.tensorboard)
 
         pre_trainer = hydra.utils.instantiate(pre_cfg.trainer, logger=pre_logger)
+        # The pre-training stage logs into its own directory, so it needs its own
+        # config text; pre_cfg differs from cfg (see pre_training_overrides).
+        log_config_text_to_tensorboard(pre_cfg, pre_trainer)
         pre_trainer.fit(
             pre_model, pre_datamodule.train_dataloader(), pre_datamodule.val_dataloader()
         )
