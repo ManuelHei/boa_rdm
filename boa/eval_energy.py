@@ -98,18 +98,19 @@ def pick_checkpoint(run_dir: Path) -> Path:
     raise FileNotFoundError(f"no checkpoint in {run_dir}")
 
 
-# A muted blue for the data, dark ink for summary marks, red reserved for the
-# chemical-accuracy threshold -- distinguishable under the common colour-vision
-# deficiencies, which a blue/green pair would not be.
-_FILL, _INK, _THRESHOLD = "#4c78a8", "#2f3337", "#e45756"
+# A muted blue for the data and an orange for the mean: the one pair that stays
+# distinguishable under every common colour-vision deficiency. Dark ink for the
+# median, which is a line rather than a colour.
+_FILL, _INK, _ACCENT = "#4c78a8", "#2f3337", "#f58518"
 
-# The column each observable's absolute error lands in, and the unit it is in.
-# The energy is plotted in kcal/mol rather than hartree because 1 kcal/mol is the
-# threshold it has to be read against.
+# The column each observable's absolute error lands in, the factor that takes it
+# to the unit it is plotted in, and that unit. Both energies are plotted in
+# kcal/mol -- hartree hides the scale a chemist reads them against. The dipole is
+# not an energy and has no kcal/mol, so it stays in atomic units.
 _ERROR_COLUMNS = {
-    "energy": ("energy_abs_error_kcal", "kcal/mol"),
-    "kinetic": ("kinetic_abs_error", "Ha"),
-    "dipole": ("dipole_abs_error", "a.u."),
+    "energy": ("energy_abs_error_kcal", 1.0, "kcal/mol"),
+    "kinetic": ("kinetic_abs_error", HARTREE_TO_KCAL, "kcal/mol"),
+    "dipole": ("dipole_abs_error", 1.0, "a.u."),
 }
 
 
@@ -127,21 +128,19 @@ def _plot_property(ax_hist, ax_scatter, err, n_atom, prop, unit, log):
         else np.linspace(0.0, max(err.max(), 1e-12), 21)
     )
     label = f"|Δ{prop}|  [{unit}]"
-    median = float(np.median(err))
+    mean, median = float(err.mean()), float(np.median(err))
 
     ax_hist.hist(err, bins=bins, color=_FILL, edgecolor="white", linewidth=0.6)
+    # Both, because they answer different questions: a mean well above the
+    # median is a tail, and a tail is what an outlier molecule looks like.
+    ax_hist.axvline(mean, color=_ACCENT, linewidth=1.6, label=f"mean {mean:.3g}")
     ax_hist.axvline(median, color=_INK, linestyle="--", linewidth=1.2,
                     label=f"median {median:.3g}")
-    if prop == "energy":
-        # 1 kcal/mol is the threshold anyone reads an energy error against.
-        ax_hist.axvline(1.0, color=_THRESHOLD, linewidth=1.2,
-                        label=f"1 kcal/mol ({(err < 1).sum()}/{err.size})")
     if use_log:
         ax_hist.set_xscale("log")
     ax_hist.set_xlabel(label)
     ax_hist.set_ylabel("molecules")
-    ax_hist.set_title(f"{prop}   mean {err.mean():.3g} {unit}", fontsize=9,
-                      color=_INK, loc="left")
+    ax_hist.set_title(prop, fontsize=9, color=_INK, loc="left")
     ax_hist.legend(frameon=False, fontsize=8)
 
     # Sizes are integers, so points at the same size would sit on one vertical
@@ -149,14 +148,6 @@ def _plot_property(ax_hist, ax_scatter, err, n_atom, prop, unit, log):
     jitter = np.random.default_rng(0).uniform(-0.18, 0.18, n_atom.size)
     ax_scatter.scatter(n_atom + jitter, err, s=24, color=_FILL, alpha=0.75,
                        edgecolor="white", linewidth=0.5)
-    sizes = np.unique(n_atom)
-    if sizes.size >= 3:
-        ax_scatter.plot(sizes, [np.median(err[n_atom == s]) for s in sizes],
-                        color=_INK, linewidth=1.4, marker="o", markersize=3.5,
-                        label="median per size")
-        ax_scatter.legend(frameon=False, fontsize=8)
-    if prop == "energy":
-        ax_scatter.axhline(1.0, color=_THRESHOLD, linewidth=1.2)
     if use_log:
         ax_scatter.set_yscale("log")
     ax_scatter.set_xlabel("atoms per molecule")
@@ -188,7 +179,8 @@ def plot_errors(rows, out=None, props=tuple(_ERROR_COLUMNS), title=None, log="au
         out: where to write the figure; ``None`` just returns it.
         props: which of energy / kinetic / dipole to draw; any absent from the
             rows is skipped rather than raising, since a run whose dataset
-            carried no dipole simply has no such column.
+            carried no dipole simply has no such column. Both energies are
+            drawn in kcal/mol; the dipole is not an energy and stays in a.u.
         title: figure title; defaults to the file name when a path was given.
         log: log axes for the error; ``"auto"`` turns them on past two decades,
             which is where a linear histogram collapses into one bar. Decided
@@ -216,7 +208,7 @@ def plot_errors(rows, out=None, props=tuple(_ERROR_COLUMNS), title=None, log="au
 
     panels = []
     for prop in props:
-        col, unit = _ERROR_COLUMNS[prop]
+        col, to_unit, unit = _ERROR_COLUMNS[prop]
         sel = [r for r in ok if col in r and "n_atom" in r]
         if not sel:
             logging.getLogger("eval_energy").warning(
@@ -226,7 +218,7 @@ def plot_errors(rows, out=None, props=tuple(_ERROR_COLUMNS), title=None, log="au
         panels.append((
             prop,
             unit,
-            np.array([r[col] for r in sel], dtype=float),
+            np.array([r[col] for r in sel], dtype=float) * to_unit,
             np.array([r["n_atom"] for r in sel], dtype=float),
         ))
     if not panels:
