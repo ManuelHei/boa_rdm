@@ -6,3 +6,10 @@ _target_: boa.data.dataset.DfDbDataset
 path: ${paths.data_dir}/${data.dataset_name}
 basis_info: ${data.basis_info}
 rdm_key: gamma
+
+# References for the physical-observable validation. All are per-molecule
+# scalars or a fixed-length vector, so unlike `ovlp`/`vext` they collate
+# cleanly across molecules of different sizes.
+# Stored as float32 once through the loader (~1e-5 Ha on a 400 Ha total),
+# which is far below any model error but is not the file's full precision.
+extra_props: ["energy", "ke", "dipole"]

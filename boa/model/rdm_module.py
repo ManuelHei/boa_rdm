@@ -51,6 +51,9 @@ untested.
 
 import logging
 
+from collections import Counter
+from pathlib import Path
+
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -80,6 +83,14 @@ class RDMLightningModule(LightningModule):
         self.log_matrix_images = self._hp("log_matrix_images", True)
         self.log_matrix_images_every_n_val = int(self._hp("log_matrix_images_every_n_val", 1))
         self.log_occupation_figures = self._hp("log_occupation_figures", True)
+        self.log_matrix_images_n_molecules = int(
+            self._hp("log_matrix_images_n_molecules", 3)
+        )
+        self.log_energy = self._hp("log_energy", True)
+        # The functional the targets were computed with. df_db_pbe is named
+        # `pbe` but its qmmol group says `lda,vwn_rpa`; the stored value is what
+        # reproduces the stored energy, so trust the group, not the name.
+        self.energy_xc = self._hp("energy_xc", "lda,vwn_rpa")
 
         if self.criterion not in ("mse", "mae", "huber", "function"):
             raise ValueError(
@@ -422,8 +433,12 @@ class RDMLightningModule(LightningModule):
         Eigenvalues only. The eigenvectors of this sandwich live in the Löwdin
         basis, not the AO basis, so they are not returned.
         """
-        gamma = rdm.detach().to(dtype=torch.float64)
-        s = overlap.detach().to(dtype=torch.float64)
+        # On CPU deliberately. These are at most 162x162, so the GPU buys nothing,
+        # and `torch.linalg.eigh` there goes through cuSOLVER, which fails with
+        # CUSOLVER_STATUS_INTERNAL_ERROR when it cannot allocate a handle on a
+        # busy card -- killing a 20 000-step run for the sake of a diagnostic.
+        gamma = rdm.detach().cpu().to(dtype=torch.float64)
+        s = overlap.detach().cpu().to(dtype=torch.float64)
         gamma = 0.5 * (gamma + gamma.T)
         s = 0.5 * (s + s.T)
         evals_s, u = torch.linalg.eigh(s)
@@ -439,6 +454,117 @@ class RDMLightningModule(LightningModule):
         """The TensorBoard SummaryWriter, or None if we are not logging to one."""
         writer = getattr(getattr(self, "logger", None), "experiment", None)
         return writer if hasattr(writer, "add_figure") else None
+
+    @staticmethod
+    def _hill_formula(atomic_numbers) -> str:
+        """Molecular formula in Hill notation: C, then H, then the rest A-Z.
+
+        Without carbon the whole thing is alphabetical, hydrogen included --
+        that is the convention, not an oversight (H2O, not OH2).
+        """
+        import ase.data
+
+        counts = Counter(ase.data.chemical_symbols[int(z)] for z in atomic_numbers)
+        if "C" in counts:
+            order = ["C"] + (["H"] if "H" in counts else [])
+            order += sorted(k for k in counts if k not in ("C", "H"))
+        else:
+            order = sorted(counts)
+        return "".join(f"{s}{counts[s] if counts[s] > 1 else ''}" for s in order)
+
+    @staticmethod
+    def _molecule(batch, index: int = 0):
+        """``(id, atomic numbers, positions)`` for molecule ``index`` of the batch.
+
+        Every figure in this module goes through here, so the structure image and
+        the matrices beside it cannot drift onto different molecules. Returns
+        ``None`` if the batch does not carry the fields (the H2O QMLearn path).
+        """
+        pos = getattr(batch, "pos", None)
+        types = getattr(batch, "atom_types", None)
+        if pos is None or types is None:
+            return None
+        assign = getattr(batch, "batch", None)
+        sel = slice(None) if assign is None else (assign == index)
+        mol_id = getattr(batch, "id", None)
+        if isinstance(mol_id, (list, tuple)):
+            mol_id = mol_id[index] if index < len(mol_id) else None
+        return mol_id, types[sel].detach().cpu(), pos[sel].detach().cpu()
+
+    def _molecule_label(self, batch, index: int = 0) -> str:
+        """``"C6H6 (mol_1)"`` -- what is actually in the panels, for the title.
+
+        An unlabelled heatmap is not reproducible: with a shuffled loader or a
+        changed split the same tag silently starts showing a different molecule.
+        """
+        info = self._molecule(batch, index)
+        if info is None:
+            return ""
+        mol_id, types, _ = info
+        label = self._hill_formula(types)
+        if mol_id is not None:
+            label += f" ({mol_id})"
+        return label
+
+    @staticmethod
+    def _structure_figure(atomic_numbers, positions, title):
+        """The molecule itself, so the matrices can be read against a geometry.
+
+        Bonds are drawn where the separation is under 1.3x the sum of covalent
+        radii -- a display heuristic, not chemistry, and it says nothing about
+        which pairs the model's graph actually connects (that is
+        ``edge_radius_ang``, currently 8.0 A, which reaches essentially every
+        pair at this molecule size).
+        """
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        from ase.data import chemical_symbols, covalent_radii
+        from ase.data.colors import jmol_colors
+
+        z = np.asarray(atomic_numbers, dtype=int)
+        xyz = np.asarray(positions, dtype=float)
+
+        fig = plt.figure(figsize=(4.2, 3.6), dpi=110)
+        ax = fig.add_subplot(111, projection="3d")
+
+        d = np.linalg.norm(xyz[:, None, :] - xyz[None, :, :], axis=-1)
+        cutoff = 1.3 * (covalent_radii[z][:, None] + covalent_radii[z][None, :])
+        for i, j in zip(*np.triu(np.logical_and(d < cutoff, d > 0), k=1).nonzero()):
+            ax.plot(*zip(xyz[i], xyz[j]), color="0.45", linewidth=1.4, zorder=1)
+
+        ax.scatter(
+            xyz[:, 0], xyz[:, 1], xyz[:, 2],
+            s=[max(28.0, 190.0 * covalent_radii[n]) for n in z],
+            c=[jmol_colors[n] for n in z],
+            edgecolors="0.25", linewidths=0.5, depthshade=False, zorder=2,
+        )
+        for (x, y, zz), n in zip(xyz, z):
+            ax.text(x, y, zz, chemical_symbols[n], fontsize=6, zorder=3)
+
+        # Equal aspect: an anisotropically scaled molecule reads as the wrong one.
+        # Padding is a fraction of the extent, not an absolute number of angstrom,
+        # so a 4-atom molecule fills the panel as well as a 24-atom one does.
+        # Padding and zoom are tied: zoom magnifies about the box centre, so an
+        # atom sitting close to the box edge leaves the panel. 1.45 keeps every
+        # atom at <=0.9 of the axis half-width after a 1.3x zoom, corners of a
+        # rotated projection included.
+        extent = float((xyz.max(axis=0) - xyz.min(axis=0)).max())
+        span = 0.5 * max(extent, 1.0) * 1.45
+        mid = 0.5 * (xyz.max(axis=0) + xyz.min(axis=0))
+        ax.set_xlim(mid[0] - span, mid[0] + span)
+        ax.set_ylim(mid[1] - span, mid[1] + span)
+        ax.set_zlim(mid[2] - span, mid[2] + span)
+        # zoom= is what actually fills the panel; the 3D projection is drawn well
+        # inside its axes and set_position alone leaves the molecule small.
+        ax.set_box_aspect((1, 1, 1), zoom=1.3)
+        ax.set_title(title, fontsize=9, pad=0)
+        ax.set_axis_off()
+        # 3D axes reserve room for decorations that set_axis_off only hides, so
+        # the panel has to be pushed out to the figure edges by hand.
+        ax.set_position((0.0, 0.0, 1.0, 0.94))
+        return fig
 
     @staticmethod
     def _matrix_figure(matrix, title, vmax=None):
@@ -470,32 +596,159 @@ class RDMLightningModule(LightningModule):
         fig.tight_layout()
         return fig
 
-    def log_matrix_figures(self, pred, target, ao_mask):
-        """Log the target, the prediction and their difference as images.
+    def log_matrix_figures(self, batch, pred, target, ao_mask):
+        """Log target, prediction, error and structure for the first molecules.
 
-        Only the first molecule of the batch, on rank zero. Target and
-        prediction share one colour scale so they are directly comparable; the
-        error gets its own, since it is typically far smaller and would be
-        invisible on the shared one.
+        ``log_matrix_images_n_molecules`` of them (default 3), on rank zero. One
+        molecule is a poor sample of a set spanning 3-27 atoms and 18-162 AOs:
+        the first validation molecule happens to be 4-atom ammonia, so every
+        figure logged before this showed an 18x18 matrix standing in for a
+        typical 131x131 one.
+
+        Within a molecule, target and prediction share one colour scale so they
+        are directly comparable; the error gets its own, since it is typically
+        far smaller and would be invisible on the shared one. Scales are **not**
+        shared across molecules -- these are different systems, and a common
+        scale would flatten the smaller one to nothing.
+
+        Each image type gets its **own** top-level tag prefix, with one tag per
+        molecule inside it. TensorBoard groups the Images tab by the text before
+        the first ``/``, so the previous ``rdm/target``, ``rdm/prediction``,
+        ``rdm/error`` collapsed into one section; the ``rdm_`` stem keeps the
+        sections adjacent in the alphabetical list.
         """
         writer = self._tb_writer()
         if writer is None:
             return
         import matplotlib.pyplot as plt
 
-        n_ao = int(ao_mask[0].sum())
-        t = target[0, :n_ao, :n_ao]
-        p = pred[0, :n_ao, :n_ao]
-        shared = max(float(t.abs().max()), float(p.abs().max()))
+        n_mol = min(int(self.log_matrix_images_n_molecules), int(pred.shape[0]))
+        for i in range(n_mol):
+            n_ao = int(ao_mask[i].sum())
+            t = target[i, :n_ao, :n_ao]
+            p = pred[i, :n_ao, :n_ao]
+            shared = max(float(t.abs().max()), float(p.abs().max()))
+            who = self._molecule_label(batch, i)
+            suffix = f" -- {who}" if who else ""
+            # The slot, not the molecule id, indexes the tag: the id would start a
+            # fresh series whenever the loader order changed, and these are time
+            # series that have to stay comparable across steps.
+            slot = f"mol{i}"
 
-        figures = {
-            "rdm/target": self._matrix_figure(t, "reference D", vmax=shared),
-            "rdm/prediction": self._matrix_figure(p, "predicted D", vmax=shared),
-            "rdm/error": self._matrix_figure(p - t, "predicted - reference"),
+            figures = {
+                f"rdm_reference/{slot}": self._matrix_figure(
+                    t, f"reference D{suffix}", vmax=shared
+                ),
+                f"rdm_prediction/{slot}": self._matrix_figure(
+                    p, f"predicted D{suffix}", vmax=shared
+                ),
+                f"rdm_error/{slot}": self._matrix_figure(
+                    p - t, f"predicted - reference{suffix}"
+                ),
+            }
+            info = self._molecule(batch, i)
+            if info is not None:
+                _, types, positions = info
+                figures[f"rdm_structure/{slot}"] = self._structure_figure(
+                    types.numpy(), positions.numpy(), who or "structure"
+                )
+            for tag, fig in figures.items():
+                writer.add_figure(tag, fig, global_step=self.global_step)
+                plt.close(fig)
+
+    def log_property_errors(self, batch, pred, target, ao_mask):
+        """Physical observables from the predicted RDM against stored references.
+
+        Total energy, kinetic energy and dipole, for the same molecules the
+        figures show, through the same
+        :func:`boa.model.properties.property_errors` the standalone sweep
+        (``boa/eval_energy.py``) uses, so the two cannot drift apart.
+
+        These are the only metrics here that are not basis-relative. ``rel_fro``
+        weights an error by the size of the matrix element; these weight it by
+        how much it changes the system, and the energy comes with a scale
+        everyone knows -- 1 kcal/mol is chemical accuracy.
+
+        References come from the batch, so the dataset must carry ``energy``,
+        ``ke`` and ``dipole`` in ``extra_props``. Whichever are present get
+        checked; if none are, this skips once and quietly.
+        """
+        if not self.log_energy:
+            return
+        available = {
+            key: getattr(batch, attr, None)
+            for key, attr in (("energy", "energy"), ("kinetic", "ke"), ("dipole", "dipole"))
         }
-        for tag, fig in figures.items():
-            writer.add_figure(tag, fig, global_step=self.global_step)
-            plt.close(fig)
+        available = {k: v for k, v in available.items() if v is not None}
+        if not available:
+            if not getattr(self, "_energy_warned", False):
+                pylogger.warning(
+                    "log_energy is on but the batch carries none of energy/ke/dipole; "
+                    "add them to the dataset's extra_props. Skipping the check."
+                )
+                self._energy_warned = True
+            return
+
+        from boa.model.properties import property_errors, references_from_batch
+
+        basis = self._hp("dft_basis_set", "6-31g*")
+        n_mol = min(int(self.log_matrix_images_n_molecules), int(pred.shape[0]))
+        collected = {}
+        for i in range(n_mol):
+            info = self._molecule(batch, i)
+            if info is None:
+                return
+            mol_id, types, positions = info
+            n_ao = int(ao_mask[i].sum())
+            refs = references_from_batch(batch, i, int(pred.shape[0]))
+            if not refs:
+                return
+            try:
+                res = property_errors(
+                    types.numpy(),
+                    positions.numpy(),
+                    pred[i, :n_ao, :n_ao].detach().float().cpu().numpy(),
+                    refs,
+                    basis=basis,
+                    xc=self.energy_xc,
+                )
+            except Exception as exc:  # pyscf failure must not kill training
+                pylogger.warning(f"property check failed for molecule {i} ({mol_id}): {exc}")
+                continue
+            parts = []
+            if "energy_abs_error" in res:
+                collected.setdefault("energy", []).append(res["energy_abs_error"])
+                parts.append(
+                    f"E {res['energy_pred']:.4f} vs {res['energy_ref']:.4f} Ha "
+                    f"({res['energy_abs_error_kcal']:.2f} kcal/mol)"
+                )
+            if "kinetic_abs_error" in res:
+                collected.setdefault("kinetic", []).append(res["kinetic_abs_error"])
+                parts.append(
+                    f"T {res['kinetic_pred']:.4f} vs {res['kinetic_ref']:.4f} Ha"
+                )
+            if "dipole_abs_error" in res:
+                collected.setdefault("dipole", []).append(res["dipole_abs_error"])
+                parts.append(
+                    f"|Δmu| {res['dipole_abs_error']:.4f} a.u. "
+                    f"(|mu_ref| {res['dipole_ref_norm']:.4f})"
+                )
+            pylogger.info(f"props {mol_id}: " + "; ".join(parts))
+
+        writer = self._tb_writer()
+        if writer is None or not collected or not hasattr(writer, "add_scalar"):
+            return
+        for key, errs in collected.items():
+            mean = float(np.mean(errs))
+            # Per slot as well as averaged: the molecules differ ~6x in size, so a
+            # mean over three hides which one is failing.
+            for i, e in enumerate(errs):
+                writer.add_scalar(f"{key}/abs_err_mol{i}", e, self.global_step)
+            writer.add_scalar(f"{key}/abs_err_mean", mean, self.global_step)
+            if key == "energy":
+                writer.add_scalar(
+                    "energy/abs_err_mean_kcal", mean * 627.509474, self.global_step
+                )
 
     def log_electron_traces(self, batch, pred, target):
         """Log ``tr(D S)`` for the first molecule of the batch.
@@ -561,6 +814,8 @@ class RDMLightningModule(LightningModule):
         s = overlap[0, :n_ao, :n_ao]
         occ_pred = self.occupation_numbers(pred[0, :n_ao, :n_ao], s)
         occ_ref = self.occupation_numbers(target[0, :n_ao, :n_ao], s)
+        # The scalars below stay on molecule 0 so their history is one series;
+        # only the figures fan out over several molecules.
 
         def _extrema(occ):
             n_elec = float(occ.sum())
@@ -595,9 +850,21 @@ class RDMLightningModule(LightningModule):
 
         import matplotlib.pyplot as plt
 
-        fig = self._occupation_figure(occ_pred, occ_ref)
-        writer.add_figure("rdm/occupations", fig, global_step=self.global_step)
-        plt.close(fig)
+        n_show = min(int(self.log_matrix_images_n_molecules), int(pred.shape[0]))
+        for i in range(n_show):
+            n_ao_i = int(ao_mask[i].sum())
+            s_i = overlap[i, :n_ao_i, :n_ao_i]
+            fig = self._occupation_figure(
+                self.occupation_numbers(pred[i, :n_ao_i, :n_ao_i], s_i),
+                self.occupation_numbers(target[i, :n_ao_i, :n_ao_i], s_i),
+            )
+            who = self._molecule_label(batch, i)
+            if who:
+                fig.suptitle(who, fontsize=8)
+            writer.add_figure(
+                f"rdm_occupations/mol{i}", fig, global_step=self.global_step
+            )
+            plt.close(fig)
 
     # ------------------------------------------------------------------
     # Lightning plumbing
@@ -648,10 +915,16 @@ class RDMLightningModule(LightningModule):
             and (self.current_epoch % self.log_matrix_images_every_n_val == 0)
         ):
             if self.log_matrix_images:
-                self.log_matrix_figures(rdm, target, ao_mask)
+                self.log_matrix_figures(batch, rdm, target, ao_mask)
             self.log_electron_traces(batch, rdm, target)
+            self.log_property_errors(batch, rdm, target, ao_mask)
             if self.log_occupation_figures:
-                self.log_occupation_spectrum(batch, rdm, target, ao_mask)
+                try:
+                    self.log_occupation_spectrum(batch, rdm, target, ao_mask)
+                except Exception as exc:
+                    # Diagnostics must never end a run. The energy check already
+                    # guards itself; this one used to raise straight through.
+                    pylogger.warning(f"occupation spectrum failed: {exc}")
 
         return loss
 

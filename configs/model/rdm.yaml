@@ -33,6 +33,9 @@ log_matrix_images_every_n_val: 1
 
 # Sorted eigenvalues of S^{1/2} γ S^{1/2} for the same molecule and cadence
 # as the heatmaps. Predicted vs reference, with lines at 0 and 2.
+# How many molecules the figures cover. One is a poor sample of a set
+# spanning 3-27 atoms; the first val molecule is 4-atom ammonia.
+log_matrix_images_n_molecules: 3
 log_occupation_figures: true
 
 dft_basis_set: ${data.basis_info.basis}
