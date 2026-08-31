@@ -15,6 +15,25 @@ symmetrize: true
 # Output scale on the predicted matrix.
 scale_factor: 1.0
 
+# Per-element prior on the on-site (diagonal) blocks: the rotation-invariant
+# l=0 part of each same-l shell pair, measured on the training split and added
+# to the prediction (`boa.model.onsite`). A carbon 1s is doubly occupied in
+# every molecule; without this the net has to reproduce that constant, and the
+# residual that actually carries the chemistry is what it stops resolving.
+#   false / null  off
+#   true          measure it over the training split and cache it beside the dataset
+#   <path>        load a prior written earlier
+# It is a bias on the *prediction*, not a shift of the target, so the model
+# output stays a density matrix and nothing downstream needs un-shifting.
+onsite_bias: false
+# Molecules the measurement pass reads; 0 means the whole training split. The
+# mean over ~10 000 atoms is already converged to a few parts in 10^4 (the pass
+# logs its standard error, so the choice is checkable rather than assumed).
+onsite_bias_max_molecules: 2000
+# ... but the cap is not allowed to starve a rare element: the pass keeps
+# reading until every element has at least this many atoms, or the split ends.
+onsite_bias_min_atoms: 32
+
 # Batch key holding the reference density matrix, (n_ao, n_ao) per sample in
 # the AO ordering of basis_info.basis_dict.
 target_key: rdm

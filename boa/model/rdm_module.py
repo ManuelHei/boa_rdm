@@ -62,6 +62,8 @@ from lightning import LightningModule
 from torch import Tensor
 from torch_ema import ExponentialMovingAverage
 
+from boa.model.onsite import OnsiteL0Statistics, load_onsite_bias, save_onsite_bias
+
 pylogger = logging.getLogger(__name__)
 
 
@@ -113,6 +115,24 @@ class RDMLightningModule(LightningModule):
         self.max_basis_dim = int(self.basis_dim_per_atom.max())
 
         self.register_buffer("scale", torch.tensor(float(self._hp("scale_factor", 1.0))))
+
+        # The per-element on-site prior (see :mod:`boa.model.onsite`). Registered
+        # only when it is switched on, so a checkpoint from a run without it
+        # still loads into a model built from that run's config.
+        self.onsite_bias_cfg = self._hp("onsite_bias", None)
+        self.onsite_bias_max_molecules = int(self._hp("onsite_bias_max_molecules", 2000))
+        self.onsite_bias_min_atoms = int(self._hp("onsite_bias_min_atoms", 32))
+        if self.onsite_bias_cfg:
+            self.register_buffer(
+                "onsite_bias",
+                torch.zeros(
+                    len(self.basis_info.atomic_numbers),
+                    self.max_basis_dim,
+                    self.max_basis_dim,
+                ),
+            )
+        else:
+            self.onsite_bias = None
 
         self.ema = ExponentialMovingAverage(self.parameters(), decay=self.hparams.train.ema.decay)
         trainer_cfg = self.hparams.train.trainer
@@ -231,8 +251,165 @@ class RDMLightningModule(LightningModule):
 
         rdm = rdm * self.scale
 
+        # After the scale, because the prior is in the units of the matrix and
+        # not something the net's output scale should stretch.
+        if self.onsite_bias is not None:
+            rdm = rdm + self.onsite_prior(batch, ao_index, n_mol, n_ao, rdm)
+
         ao_mask = torch.arange(n_ao, device=rdm.device)[None, :] < n_ao_per_mol[:, None]
         return rdm, ao_mask
+
+    # ------------------------------------------------------------------
+    # The on-site prior
+    # ------------------------------------------------------------------
+    def onsite_prior(self, batch, ao_index: Tensor, n_mol: int, n_ao: int, like: Tensor) -> Tensor:
+        """The per-element prior, placed on the diagonal blocks.
+
+        Same placement as :meth:`scatter_blocks`, including the padding sink, so
+        an atom whose element has fewer AOs than ``max_basis_dim`` contributes
+        nothing outside its own block.
+        """
+        atom_index = self.atomic_number_to_atom_index[batch.atomic_numbers.long()]
+        blocks = self.onsite_bias[atom_index].to(like.dtype)
+        pad = n_ao + 1
+        flat = (
+            batch.batch[:, None, None] * pad * pad
+            + ao_index[:, :, None] * pad
+            + ao_index[:, None, :]
+        ).reshape(-1)
+        buffer = torch.zeros(n_mol * pad * pad, dtype=like.dtype, device=like.device)
+        buffer.index_add_(0, flat, blocks.reshape(-1))
+        return buffer.view(n_mol, pad, pad)[:, :n_ao, :n_ao]
+
+    @staticmethod
+    def onsite_blocks(batch, matrix: Tensor, ao_index: Tensor, n_ao: int) -> Tensor:
+        """The diagonal ``(atom, atom)`` blocks of a batched matrix, one per atom.
+
+        Padded coefficient slots are clamped onto a real AO rather than sent to
+        the sink, because gathering has no sink -- the values they pick up are
+        junk, and every consumer reads only the slots below the element's own AO
+        count.
+        """
+        safe = ao_index.clamp(max=n_ao - 1)
+        return matrix[batch.batch[:, None, None], safe[:, :, None], safe[:, None, :]]
+
+    def collect_onsite_statistics(self, loader) -> OnsiteL0Statistics:
+        """Mean on-site block per element, over the *targets* of ``loader``.
+
+        The molecule cap is a floor as well as a ceiling: a rare element (six
+        fluorines in the first two hundred df_db molecules) would otherwise get
+        a prior from a handful of atoms, or none at all, purely because the pass
+        stopped early. The scan continues past the cap until every element has
+        ``onsite_bias_min_atoms``, and ends at the split either way.
+        """
+        stats = OnsiteL0Statistics(self.basis_info)
+        cap = self.onsite_bias_max_molecules
+        like = torch.zeros((), dtype=torch.get_default_dtype(), device=self.device)
+        with torch.no_grad():
+            for batch in loader:
+                batch = batch.to(self.device)
+                ao_index, _, n_ao = self.ao_layout(batch)
+                n_mol = int(batch.num_graphs)
+                target = self.get_target(batch, n_ao, n_mol, like=like)
+                blocks = self.onsite_blocks(batch, target, ao_index, n_ao)
+                atom_index = self.atomic_number_to_atom_index[batch.atomic_numbers.long()]
+                stats.update(atom_index.cpu().numpy(), blocks.cpu().numpy())
+                stats.n_molecules += n_mol
+                if (
+                    cap
+                    and stats.n_molecules >= cap
+                    and int(stats.count.min()) >= self.onsite_bias_min_atoms
+                ):
+                    break
+        if cap and stats.n_molecules > cap:
+            pylogger.info(
+                f"read {stats.n_molecules} molecules rather than {cap}: the rarest "
+                f"element needed {self.onsite_bias_min_atoms} atoms"
+            )
+        return stats
+
+    def _onsite_cache_path(self, n_train: int) -> Path | None:
+        """Where an ``auto`` prior is cached, or None if the config does not say.
+
+        The training-split size is in the file name: a prior is a property of
+        the split it was measured on, and silently reusing one from a different
+        split is the failure this is meant to avoid.
+        """
+        try:
+            root = Path(self.hparams.train.paths.data_dir) / self.hparams.train.data.dataset_name
+        except Exception:  # noqa: BLE001 - a config without paths is a valid one
+            return None
+        if not root.is_dir():
+            return None
+        cap = self.onsite_bias_max_molecules
+        return root / f"onsite_l0_bias__ntrain{n_train}__cap{cap}.pt"
+
+    def _train_loader(self):
+        """The training loader, however this run was started.
+
+        ``train.py`` hands ``trainer.fit`` the dataloaders rather than the
+        datamodule, so ``trainer.datamodule`` is None there; a run driven by a
+        datamodule has it and no ``trainer.train_dataloader`` until later.
+        """
+        loader = getattr(self.trainer, "train_dataloader", None)
+        if loader is not None:
+            return loader
+        datamodule = getattr(self.trainer, "datamodule", None)
+        if datamodule is not None:
+            return datamodule.train_dataloader()
+        raise RuntimeError(
+            "onsite_bias needs the training data to measure the prior, and the "
+            "trainer exposes neither a dataloader nor a datamodule. Point "
+            "model.onsite_bias at a file written by an earlier run instead."
+        )
+
+    def on_train_start(self):
+        """Fill the on-site prior before the first step, from cache or from the data.
+
+        ``on_train_start`` rather than ``setup``: the training dataloader does
+        not exist yet at setup when ``fit`` was handed loaders instead of a
+        datamodule, and by here a resumed run has already loaded its checkpoint,
+        so the measurement is skipped rather than redone and thrown away.
+        """
+        if self.onsite_bias is None:
+            return
+        if bool(self.onsite_bias.any()):
+            return  # a resumed run already carries it
+
+        cfg = self.onsite_bias_cfg
+        if not isinstance(cfg, bool) and str(cfg) != "auto":
+            path = Path(str(cfg))
+            self.onsite_bias.copy_(load_onsite_bias(path, self.basis_info))
+            pylogger.info(f"on-site l=0 prior loaded from {path}")
+            return
+
+        loader = self._train_loader()
+        try:
+            n_train = len(loader.dataset)
+        except (TypeError, AttributeError):  # a dataset without __len__ is still trainable
+            n_train = 0
+        cache = self._onsite_cache_path(n_train)
+
+        if cache is not None and cache.is_file():
+            self.onsite_bias.copy_(load_onsite_bias(cache, self.basis_info))
+            pylogger.info(f"on-site l=0 prior loaded from {cache}")
+            return
+
+        pylogger.info(
+            f"measuring the on-site l=0 prior over the training split "
+            f"(cap {self.onsite_bias_max_molecules or n_train} molecules)"
+        )
+        stats = self.collect_onsite_statistics(loader)
+        for line in stats.summary():
+            pylogger.info(line)
+        self.onsite_bias.copy_(stats.bias().to(self.onsite_bias.dtype))
+        if cache is not None:
+            save_onsite_bias(
+                cache,
+                stats,
+                {"n_train": n_train, "cap": self.onsite_bias_max_molecules},
+            )
+            pylogger.info(f"on-site l=0 prior written to {cache}")
 
     def predict_rdm(self, batch) -> tuple[Tensor, Tensor]:
         """Density matrix for a batch, without needing a target."""
