@@ -1,0 +1,40 @@
+# @package _global_
+
+# HELM on df_db_mp2: 15 000 QM9 molecules, C/F/H/N/O, 3-26 atoms, 18-148 AOs,
+# 6-31G* -- the same shape as df_db_pbe but a **correlated** target.
+#
+# The 1-RDM here is MP2, not Kohn-Sham, and that changes what the target *is*.
+# A KS density matrix is idempotent: its natural occupations are 0 or 2. An MP2
+# one is genuinely fractional -- measured 1.9999 down to 0.0002, with 8 of 20
+# occupations strictly inside (0.01, 1.99) on ammonia. So `occ/pred_min` and
+# `occ/pred_max` still bound admissibility at [0, 2], but the reference no
+# longer sits at those bounds, and "fractional occupation" stops being evidence
+# of a bad prediction. Read them against the *reference* spectrum, which the
+# occupation figure plots alongside.
+
+defaults:
+  - override /data: df_db_mp2
+  - override /model: rdm_helm
+  - override /trainer: default
+
+name: df_db_mp2_helm
+
+# HELM has no initial_guess_module; the pre-training loop is BOA-specific.
+initial_guess_pre_training_steps: 0
+
+trainer:
+  max_steps: 20000
+
+lr_scheduler:
+  T_max: ${trainer.max_steps}
+
+optim:
+  lr: 1e-3
+
+model:
+  log_electron_count: true
+  # The energy check is off because the MP2 energy is not a functional of the
+  # 1-RDM; kinetic energy and dipole are, and both reproduce their stored values
+  # exactly, so they carry the physical validation for this dataset. The
+  # dataset config simply does not supply `energy`, and the check covers
+  # whichever references are present.

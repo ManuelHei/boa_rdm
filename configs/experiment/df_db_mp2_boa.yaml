@@ -1,0 +1,33 @@
+# @package _global_
+
+# BOA on df_db_mp2, the counterpart to `df_db_mp2_helm`. See that file for what
+# a correlated (MP2) target changes about the occupation diagnostics.
+
+defaults:
+  - override /data: df_db_mp2
+  - override /model: rdm
+  - override /trainer: default
+  # Without this the default overrides set data.datamodule.n_probe, which a
+  # grid-free datamodule has no key for, and pre-training dies on ConfigKeyError.
+  - override /pre_training_overrides: grid_free
+
+name: df_db_mp2_boa
+
+# Kept for conditioning, as on df_db_pbe: D is a product of two learned factors,
+# so scale errors compound and the run without a warm start diverged.
+initial_guess_pre_training_steps: 1000
+
+trainer:
+  max_steps: 20000
+
+lr_scheduler:
+  T_max: ${trainer.max_steps}
+
+optim:
+  lr: 1e-4
+
+model:
+  log_electron_count: true
+  net:
+    axial_seed: true
+    axial_seed_d: true

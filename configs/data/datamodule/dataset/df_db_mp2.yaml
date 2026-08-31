@@ -1,0 +1,16 @@
+defaults:
+  - transform: df_db
+
+_target_: boa.data.dataset.DfDbDataset
+
+path: ${paths.data_dir}/${data.dataset_name}
+basis_info: ${data.basis_info}
+# The HDF5 layout is identical to df_db_pbe -- the method group is `mp2` rather
+# than `rks`, and the reader takes whichever group is present.
+rdm_key: gamma
+
+# `energy` is deliberately absent. The MP2 total energy is NOT a functional of
+# the 1-RDM (it needs the 2-RDM), so no energy computed from gamma can reproduce
+# the stored value -- measured at 0.22-0.99 Ha off. `ke` and `dipole` ARE pure
+# 1-RDM properties and reproduce exactly (0.0 and 1e-14).
+extra_props: ["ke", "dipole"]
