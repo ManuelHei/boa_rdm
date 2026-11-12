@@ -26,6 +26,11 @@ metric_key: aux_metric
 # G starts at exactly 0, but Adam's first step moves every weight by ~lr whatever
 # the gradient, and the stiff Coulomb metric turns that into L_G ~1e5 at scale
 # 1.0 -- which drags the shared trunk and sets the 1-RDM back. Measured over 40
-# steps (EXP-2026-11-12-05): peak L_G 1.6e5 / 436 / 6.8 and D rel_fro at step 40
+# steps: peak L_G 1.6e5 / 436 / 6.8 and D rel_fro at step 40
 # 13.6 / 5.5 / 1.15 for scale 1 / 0.1 / 0.01. 0.01 is also the size of G's entries.
 cumulant_scale_factor: 0.01
+
+# Images of G at each validation, for the same molecules as the 1-RDM images:
+# reference, prediction and error, both as stored and Coulomb-weighted
+# (M^1/2 G M^1/2, what the loss and the energy see).
+log_cumulant_images: true

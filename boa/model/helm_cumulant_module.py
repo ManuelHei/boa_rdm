@@ -6,7 +6,7 @@ and adds the losses::
 
     loss = rdm_loss_weight * L_D  +  cumulant_loss_weight * L_G
 
-``L_D`` is the density-matrix loss of :class:`RDMLightningModule` unchanged
+``L_D`` is the density-matrix loss of :class:`~boa.model.rdm_module.RDMLightningModule` unchanged
 (``criterion``: ``mse``, ``function``, ...), so every 1-RDM metric and figure
 stays comparable with the single-head runs.
 
@@ -16,7 +16,7 @@ The cumulant loss, and why it is not elementwise
 basis is far from orthonormal: on CH4 its Coulomb metric ``M = (A|B)`` has
 condition number 3.2e6. In ``M``'s eigenbasis, 64% of ``||G||_F`` sits in the
 softest quarter of directions, which carry 0.2% of the cumulant energy; the
-stiffest quarter carries 95.8% (``EXP-2026-11-12-03``). An elementwise MSE would
+stiffest quarter carries 95.8%. An elementwise MSE would
 spend most of its effort where the energy does not care.
 
 The fitting basis was built for the Coulomb metric, so ``L_G`` is measured in it:
@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import logging
 
+import numpy as np
 import torch
 from torch import Tensor
 
@@ -54,7 +55,7 @@ pylogger = logging.getLogger(__name__)
 
 
 class HelmCumulantLightningModule(HelmRDMLightningModule):
-    """1-RDM and cumulant from one :class:`HelmRDMCumulant`."""
+    """1-RDM and cumulant from one :class:`~boa.model.net.helm_cumulant.HelmRDMCumulant`."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -84,12 +85,13 @@ class HelmCumulantLightningModule(HelmRDMLightningModule):
         # lets the parent's 1-RDM logging, figures and test bookkeeping run
         # unchanged, so the cumulant side travels alongside instead.
         self._cumulant: dict | None = None
+        self.log_cumulant_images = bool(self._hp("log_cumulant_images", True))
 
     # ------------------------------------------------------------------
     # The cumulant matrix
     # ------------------------------------------------------------------
     def aux_layout(self, batch) -> tuple[Tensor, Tensor, int]:
-        """:func:`atom_layout` for the auxiliary basis."""
+        """:func:`~boa.model.rdm_module.atom_layout` for the auxiliary basis."""
         return atom_layout(
             batch, self.aux_dim_per_atom, self.atomic_number_to_atom_index, self.max_aux_dim
         )
@@ -155,6 +157,11 @@ class HelmCumulantLightningModule(HelmRDMLightningModule):
             (target * mask).pow(2).sum(dim=(1, 2)).sqrt().clamp(min=1e-12)
         )
         terms = {
+            # detached, for the figures; the losses above keep their graph
+            "cumulant": cumulant.detach(),
+            "target": target.detach(),
+            "metric": metric.detach(),
+            "mask": aux_mask,
             "loss": loss,
             "rel_fro": rel_fro,
             "rel_coulomb": (delta_norm2 / ref_norm2.clamp(min=1e-20)).sqrt(),
@@ -220,7 +227,120 @@ class HelmCumulantLightningModule(HelmRDMLightningModule):
     def validation_step(self, batch, batch_idx):
         loss = super().validation_step(batch, batch_idx)
         self._log_cumulant("val", int(batch.num_graphs))
+        if (
+            self.log_cumulant_images
+            and batch_idx == 0
+            and self.trainer.is_global_zero
+            and not self.trainer.sanity_checking
+            and self.current_epoch % self.log_matrix_images_every_n_val == 0
+        ):
+            try:
+                self.log_cumulant_figures(batch)
+            except Exception as exc:  # noqa: BLE001 - diagnostics must never end a run
+                pylogger.warning(f"cumulant figures failed: {exc}")
         return loss
+
+    @staticmethod
+    def coulomb_whiten(matrix: Tensor, metric: Tensor) -> Tensor:
+        """``M^1/2 X M^1/2``: the matrix as the Coulomb metric sees it.
+
+        The cumulant loss is the squared Frobenius norm of this for ``X = dG``,
+        and the cumulant energy is linear in it, so an image of it shows the
+        error that matters. Computed in float64; negative round-off
+        eigenvalues of ``M`` are clamped to zero.
+        """
+        m = metric.double().cpu()
+        w, u = torch.linalg.eigh(0.5 * (m + m.T))
+        root = (u * w.clamp(min=0).sqrt()) @ u.T
+        return (root @ matrix.double().cpu() @ root).float()
+
+    def _atom_boundaries(self, batch, index: int) -> list[int]:
+        """Aux-function offsets where each atom of molecule ``index`` starts."""
+        z = batch.atomic_numbers[batch.batch == index].long()
+        dims = self.aux_dim_per_atom[self.atomic_number_to_atom_index[z]]
+        return torch.cumsum(dims, 0)[:-1].tolist()
+
+    @staticmethod
+    def _cumulant_figure(matrix, what, who, vmax=None, boundaries=()):
+        """One cumulant panel: symmetric-log colour scale, atom blocks outlined.
+
+        A linear scale shows almost nothing here: ``G`` is a handful of entries
+        near its maximum on a background three orders of magnitude smaller. The
+        symmetric-log scale is linear within 1e-3 of the maximum and logarithmic
+        beyond, so both are visible and the sign stays readable. Thin lines mark
+        where each atom's auxiliary functions start.
+        """
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        from matplotlib.colors import SymLogNorm
+
+        matrix = matrix.detach().float().cpu().numpy()
+        vmax = max(float(np.abs(matrix).max()) if vmax is None else vmax, 1e-12)
+        norm = SymLogNorm(linthresh=1e-3 * vmax, vmin=-vmax, vmax=vmax, base=10)
+
+        fig, ax = plt.subplots(figsize=(4.4, 4.0), dpi=110)
+        im = ax.imshow(matrix, cmap="RdBu_r", norm=norm, interpolation="nearest")
+        for b in boundaries:
+            ax.axhline(b - 0.5, color="0.6", linewidth=0.3)
+            ax.axvline(b - 0.5, color="0.6", linewidth=0.3)
+        ax.set_title(f"{what}\n{who}  (max |x| = {vmax:.3g}, symlog)", fontsize=8)
+        ax.set_xlabel("aux index", fontsize=8)
+        ax.set_ylabel("aux index", fontsize=8)
+        ax.tick_params(labelsize=7)
+        fig.colorbar(im, ax=ax, fraction=0.046)
+        fig.tight_layout()
+        return fig
+
+    def log_cumulant_figures(self, batch, writer=None, step: int | None = None) -> None:
+        """Reference, prediction and error of ``G`` for the first molecules, twice.
+
+        Once as stored, on the auxiliary basis, and once Coulomb-weighted
+        (:meth:`coulomb_whiten`). The plain view is dominated by directions the
+        energy barely sees: under the Coulomb loss its relative error stays near
+        1 by design. The weighted view is what the loss and the energy measure.
+        As for the 1-RDM, reference and prediction share a colour scale per
+        molecule and the error gets its own. Uses the forward pass just run on
+        ``batch``; ``writer`` and ``step`` default to the run's TensorBoard and
+        global step, and can be given to render figures from a checkpoint.
+        """
+        writer = writer if writer is not None else self._tb_writer()
+        if writer is None or self._cumulant is None:
+            return
+        import matplotlib.pyplot as plt
+
+        step = self.global_step if step is None else step
+        c = self._cumulant
+        n_mol = min(int(self.log_matrix_images_n_molecules), int(c["cumulant"].shape[0]))
+        for i in range(n_mol):
+            n = int(c["mask"][i].sum())
+            ref, pred = c["target"][i, :n, :n], c["cumulant"][i, :n, :n]
+            metric = c["metric"][i, :n, :n]
+            who = self._molecule_label(batch, i)
+            slot = f"mol{i}"
+            bounds = self._atom_boundaries(batch, i)
+            views = {"cum": (ref, pred), "cum_weighted": (
+                self.coulomb_whiten(ref, metric), self.coulomb_whiten(pred, metric)
+            )}
+            figures = {}
+            for stem, (r, p) in views.items():
+                name = "G" if stem == "cum" else "M^1/2 G M^1/2"
+                shared = max(float(r.abs().max()), float(p.abs().max()))
+                for kind, matrix, vmax in (
+                    ("reference", r, shared),
+                    ("prediction", p, shared),
+                    ("error", p - r, None),
+                ):
+                    what = f"{name}: predicted - reference" if kind == "error" else (
+                        f"{'reference' if kind == 'reference' else 'predicted'} {name}"
+                    )
+                    figures[f"{stem}_{kind}/{slot}"] = self._cumulant_figure(
+                        matrix, what, who, vmax=vmax, boundaries=bounds
+                    )
+            for tag, fig in figures.items():
+                writer.add_figure(tag, fig, global_step=step)
+                plt.close(fig)
 
     def test_step(self, batch, batch_idx):
         out = super().test_step(batch, batch_idx)

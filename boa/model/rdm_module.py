@@ -77,11 +77,13 @@ def atom_layout(
     each element carries.
 
     Returns:
-        index: ``(n_atom, max_dim)``. Entry ``[k, p]`` is the index of slot ``p``
-            of atom ``k`` within its own molecule, or ``n`` (a scatter sink for
-            the padding) if the slot is unused.
-        n_per_mol: ``(n_mol,)`` number of functions of each molecule.
-        n: the largest of those, i.e. the size the matrices are padded to.
+        A tuple ``(index, n_per_mol, n)``:
+
+        * ``index``, ``(n_atom, max_dim)``: entry ``[k, p]`` is the index of slot
+          ``p`` of atom ``k`` within its own molecule, or ``n`` (a scatter sink
+          for the padding) if the slot is unused.
+        * ``n_per_mol``, ``(n_mol,)``: the number of functions of each molecule.
+        * ``n``: the largest of those, i.e. the size the matrices are padded to.
     """
     atom_index = atomic_number_to_atom_index[batch.atomic_numbers.long()]
     n_bas_atom = dim_per_element[atom_index]  # (n_atom,)
@@ -108,7 +110,8 @@ def atom_layout(
 def scatter_dense(batch, blocks: Tensor, edge_index: Tensor, index: Tensor, n: int) -> Tensor:
     """Scatter-add one block per edge into ``(n_mol, n, n)``; repeated pairs accumulate.
 
-    ``index`` is :func:`atom_layout`'s; its sink value ``n`` absorbs the padded
+    ``index`` is :func:`~boa.model.rdm_module.atom_layout`'s; its sink value ``n`` absorbs the
+    padded
     slots into a row and column that are sliced off.
     """
     rows = index[edge_index[0]]  # (n_edge, max_dim)
@@ -236,14 +239,16 @@ class RDMLightningModule(LightningModule):
     # AO bookkeeping
     # ------------------------------------------------------------------
     def ao_layout(self, batch) -> tuple[Tensor, Tensor, int]:
-        """:func:`atom_layout` for the AO basis.
+        """:func:`~boa.model.rdm_module.atom_layout` for the AO basis.
 
         Returns:
-            ao_index: ``(n_atom, max_basis_dim)``. Entry ``[k, p]`` is the AO
-                index of slot ``p`` of atom ``k`` within its own molecule, or
-                ``n_ao`` (a scatter sink for the padding) if the slot is unused.
-            n_ao_per_mol: ``(n_mol,)`` number of AOs of each molecule.
-            n_ao: the largest of those, i.e. the size the matrices are padded to.
+            A tuple ``(ao_index, n_ao_per_mol, n_ao)``:
+
+            * ``ao_index``, ``(n_atom, max_basis_dim)``: entry ``[k, p]`` is the
+              AO index of slot ``p`` of atom ``k`` within its own molecule, or
+              ``n_ao`` (a scatter sink for the padding) if the slot is unused.
+            * ``n_ao_per_mol``, ``(n_mol,)``: the number of AOs of each molecule.
+            * ``n_ao``: the largest of those, the size the matrices are padded to.
         """
         return atom_layout(
             batch, self.basis_dim_per_atom, self.atomic_number_to_atom_index, self.max_basis_dim
@@ -260,9 +265,11 @@ class RDMLightningModule(LightningModule):
             edge_index: ``(2, n_edge)``, including self-loops.
 
         Returns:
-            rdm: ``(n_mol, n_ao, n_ao)``.
-            ao_mask: ``(n_mol, n_ao)``, ``True`` on real AOs. All ``True`` when
-                every molecule in the batch is the same size.
+            A tuple ``(rdm, ao_mask)``:
+
+            * ``rdm``, ``(n_mol, n_ao, n_ao)``.
+            * ``ao_mask``, ``(n_mol, n_ao)``: ``True`` on real AOs. All ``True``
+              when every molecule in the batch is the same size.
         """
         if coeffs.shape[1] != self.max_basis_dim:
             raise ValueError(
@@ -293,8 +300,10 @@ class RDMLightningModule(LightningModule):
             edge_index: ``(2, n_edge)``. Repeated pairs accumulate.
 
         Returns:
-            rdm: ``(n_mol, n_ao, n_ao)``.
-            ao_mask: ``(n_mol, n_ao)``, ``True`` on real AOs.
+            A tuple ``(rdm, ao_mask)``:
+
+            * ``rdm``, ``(n_mol, n_ao, n_ao)``.
+            * ``ao_mask``, ``(n_mol, n_ao)``: ``True`` on real AOs.
         """
         ao_index, n_ao_per_mol, n_ao = self.ao_layout(batch)
         n_mol = int(batch.num_graphs)
@@ -774,7 +783,7 @@ class RDMLightningModule(LightningModule):
         return fig
 
     @staticmethod
-    def _matrix_figure(matrix, title, vmax=None):
+    def _matrix_figure(matrix, title, vmax=None, label="AO index"):
         """One density-matrix panel on a zero-centred diverging scale.
 
         The scale is symmetric about zero because the sign of a density-matrix
@@ -796,8 +805,8 @@ class RDMLightningModule(LightningModule):
         fig, ax = plt.subplots(figsize=(4.2, 3.6), dpi=110)
         im = ax.imshow(matrix, cmap="RdBu_r", vmin=-vmax, vmax=vmax, interpolation="nearest")
         ax.set_title(f"{title}  (max |x| = {vmax:.3g})", fontsize=9)
-        ax.set_xlabel("AO index", fontsize=8)
-        ax.set_ylabel("AO index", fontsize=8)
+        ax.set_xlabel(label, fontsize=8)
+        ax.set_ylabel(label, fontsize=8)
         ax.tick_params(labelsize=7)
         fig.colorbar(im, ax=ax, fraction=0.046)
         fig.tight_layout()

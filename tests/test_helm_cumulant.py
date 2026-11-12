@@ -272,3 +272,14 @@ def test_cumulant_starts_at_zero_and_can_leave_it(basis_info, aux_basis):
         assert rdm.abs().max() > 0, "only the cumulant heads are zeroed"
     finally:
         torch.set_default_dtype(torch.float32)
+
+
+def test_coulomb_whitening_matches_the_loss(aux_basis):
+    """The weighted image ``M^1/2 dG M^1/2`` has exactly the loss as its squared norm."""
+    torch.manual_seed(1)
+    metric = torch.as_tensor(aux_basis.coulomb_metric(_mol(WATER)))
+    delta = torch.randn(metric.shape, dtype=torch.float64)
+    delta = 0.5 * (delta + delta.T)
+    weighted = HelmCumulantLightningModule.coulomb_whiten(delta, metric).double()
+    loss = HelmCumulantLightningModule.coulomb_norm2(delta[None], metric[None])[0]
+    assert torch.allclose(weighted.pow(2).sum(), loss, rtol=1e-5)
