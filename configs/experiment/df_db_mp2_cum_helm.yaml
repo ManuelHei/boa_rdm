@@ -1,0 +1,27 @@
+# @package _global_
+
+# HELM predicting the MP2 1-RDM and the density-fitted cumulant 2-RDM jointly,
+# on the cumulant release of df_db_mp2 (6 900 molecules, 6-31g* / cc-pvdz-jkfit).
+# With both, the MP2 energy is reachable: E = E[gamma] + 0.5 <G, (A|B)>, to the
+# DF error. The cumulant energy error is logged as cum_energy_err_kcal.
+
+defaults:
+  - override /data: df_db_mp2_cum
+  - override /model: rdm_helm_cumulant
+  - override /trainer: default
+
+name: df_db_mp2_cum_helm
+
+initial_guess_pre_training_steps: 0
+
+trainer:
+  max_steps: 20000
+
+lr_scheduler:
+  T_max: ${trainer.max_steps}
+
+optim:
+  lr: 1e-3
+
+model:
+  log_electron_count: true

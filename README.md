@@ -98,6 +98,22 @@ python boa/train.py experiment=h2o_rdm_helm
 own overlap integrals. Both are silent if wrong, so run it after touching the
 basis or the head.
 
+### Jointly with the cumulant 2-RDM
+
+`experiment=df_db_mp2_cum_helm` predicts the MP2 1-RDM and the cumulant 2-RDM
+from one HELM backbone with two pairs of heads (`boa/model/net/helm_cumulant.py`).
+The cumulant `G` comes density-fitted onto cc-pvdz-jkfit (`gamma2cum` in the
+cumulant release of `df_db_mp2`, linked as `$BOA_DATA/df_db_mp2_cum`). Its energy
+is `0.5 <G, (A|B)>`, and `E[gamma] + 0.5 <G, (A|B)>` reproduces the MP2 energy up
+to the density-fitting error.
+
+`G` is about 35x the size of `D`: 744 against 128 functions per side for the
+median molecule. Its f-f blocks need `lmax = 6`, where `D` alone needs 4. It is
+trained in the Coulomb metric, `tr(dG M dG M)` with `M = (A|B)`, not
+elementwise, because `M` has condition number ~3e6.
+`tests/test_helm_cumulant.py` checks the aux-basis conventions, f functions
+included, against pyscf's own Coulomb metric.
+
 ## Training
 
 ```bash

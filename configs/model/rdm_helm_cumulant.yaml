@@ -1,0 +1,31 @@
+# HELM predicting the 1-RDM and the density-fitted cumulant 2-RDM jointly, from
+# one backbone with two pairs of heads. Everything about D is as in rdm_helm, so
+# its metrics stay comparable with the single-head runs.
+defaults:
+  - rdm_helm
+  - override net: helm_cumulant
+  - _self_
+
+_target_: boa.model.helm_cumulant_module.HelmCumulantLightningModule
+
+aux_basis: ${data.aux_basis}
+
+# loss = rdm_loss_weight * L_D + cumulant_loss_weight * L_G
+rdm_loss_weight: 1.0
+cumulant_loss_weight: 1.0
+
+# `coulomb`: tr(dG M dG M) with M = (A|B), per molecule -- the norm the
+# cumulant energy 0.5 <G, M> is measured in. The aux metric has condition
+# number ~3e6, and elementwise MSE puts most of its weight on directions
+# carrying almost no energy. `mse` is kept for comparison.
+cumulant_criterion: coulomb
+
+cumulant_key: gamma2cum
+metric_key: aux_metric
+# Output scale on G. With the heads zero-initialised (net.zero_init_cumulant),
+# G starts at exactly 0, but Adam's first step moves every weight by ~lr whatever
+# the gradient, and the stiff Coulomb metric turns that into L_G ~1e5 at scale
+# 1.0 -- which drags the shared trunk and sets the 1-RDM back. Measured over 40
+# steps (EXP-2026-11-12-05): peak L_G 1.6e5 / 436 / 6.8 and D rel_fro at step 40
+# 13.6 / 5.5 / 1.15 for scale 1 / 0.1 / 0.01. 0.01 is also the size of G's entries.
+cumulant_scale_factor: 0.01

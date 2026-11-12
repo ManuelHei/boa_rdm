@@ -1,0 +1,15 @@
+defaults:
+  - helm
+
+_target_: boa.model.net.helm_cumulant.HelmRDMCumulant
+
+aux_basis: ${model.aux_basis}
+
+# null = 2*max(l) over both bases: 6, forced by the f functions of cc-pvdz-jkfit
+# (an f-f block needs L = 6). The AO basis alone would need 4.
+lmax: null
+mmax: null
+
+# Start G at exactly 0 (zero weights in both cumulant heads). Untrained, the head
+# otherwise comes out ~650x the target and its loss ~1e9 against ~1 for D.
+zero_init_cumulant: true
