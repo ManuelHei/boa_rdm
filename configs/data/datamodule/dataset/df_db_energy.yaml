@@ -1,0 +1,16 @@
+defaults:
+  - transform: df_db
+
+_target_: boa.data.energy_dataset.EnergyDataset
+
+# Geometry, basis and reference values come from the *source* dataset; only the
+# predicted matrix and the target come from `energy_path`. One copy of the
+# geometry, so the energy model's graph cannot drift from the RDM model's.
+path: ${paths.data_dir}/${data.source_dataset_name}
+energy_path: ${paths.data_dir}/${data.dataset_name}
+basis_info: ${data.basis_info}
+rdm_key: gamma
+extra_props: ["energy"]
+
+# `delta` = e_ref - E[rdm_pred] (DFT only); `total` = e_ref (required for MP2).
+target_mode: ${data.target_mode}

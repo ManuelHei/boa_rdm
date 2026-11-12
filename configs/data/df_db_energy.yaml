@@ -1,0 +1,16 @@
+defaults:
+  - datamodule: df_db_energy
+
+# The generated set, and the source it was generated from. Override both:
+#   data.dataset_name=df_db_pbe_energy_run100 data.source_dataset_name=df_db_pbe
+dataset_name: df_db_pbe_energy_run100
+source_dataset_name: df_db_pbe
+target_mode: delta
+
+basis_info:
+  _target_: boa.data.basis_info.BasisInfo.from_atomic_numbers_with_even_tempered_basis
+  basis: '6-31g*'
+  atomic_numbers: [1, 6, 7, 8, 9]
+  beta: None
+  even_tempered: false
+  uncontracted: false
