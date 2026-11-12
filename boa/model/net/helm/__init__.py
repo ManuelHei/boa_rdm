@@ -9,8 +9,15 @@ upstream projects it adapts (fairchem, e3nn, DeepH-E3, SchNetPack) are in
 
 What was changed
 ----------------
-The files are otherwise verbatim; only the imports were adjusted so the package
-builds in this environment:
+The files are otherwise verbatim. The imports were adjusted so the package
+builds in this environment, and there is one functional addition:
+
+* ``eSEN_Backbone.forward`` takes optional ``extra_node_features`` and
+  ``extra_edge_features``, added to the node and edge messages before the first
+  layer. ``HelmEnergy`` uses them to inject a density matrix. Left as ``None``
+  they change nothing, so the geometry-only path is identical to upstream.
+
+The import changes:
 
 * ``from mpi4py import MPI`` was dropped from three modules. Every use of it
   upstream is already commented out.
