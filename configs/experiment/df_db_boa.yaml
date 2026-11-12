@@ -10,7 +10,7 @@ defaults:
   - override /trainer: default
   # Without this the default overrides set data.datamodule.n_probe, which a
   # grid-free datamodule has no key for, and pre-training dies on
-  # ConfigKeyError. Same trap as h2o_rdm hit -- see EXP-2026-08-29-01.
+  # ConfigKeyError. h2o_rdm needs the same override.
   - override /pre_training_overrides: grid_free
 
 name: df_db_boa

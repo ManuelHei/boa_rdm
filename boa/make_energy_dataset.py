@@ -24,7 +24,7 @@ Usage::
 
     .venv/bin/python boa/make_energy_dataset.py \\
         --run  <rdm run directory> \\
-        --out  $BOA_DATA/df_db_pbe_energy_run100 \\
+        --out  $BOA_DATA/df_db_pbe_energy_run42 \\
         --splits train validation test
 
 The output directory is named after the run that produced it on purpose: a

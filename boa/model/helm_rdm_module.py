@@ -23,7 +23,8 @@ from boa.model.rdm_module import RDMLightningModule
 
 
 class HelmRDMLightningModule(RDMLightningModule):
-    """:class:`RDMLightningModule` over a net that predicts the blocks itself."""
+    """:class:`~boa.model.rdm_module.RDMLightningModule` over a net that predicts the
+    blocks itself."""
 
     def predict_rdm(self, batch) -> tuple[Tensor, Tensor]:
         """Density matrix for a batch.

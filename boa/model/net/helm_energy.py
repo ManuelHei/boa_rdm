@@ -1,6 +1,7 @@
 """Predict a molecular energy from a density matrix, with the HELM backbone.
 
-The counterpart of :class:`HelmRDM`: that maps geometry to a density matrix,
+The counterpart of :class:`~boa.model.net.helm_net.HelmRDM`: that maps geometry to a density
+matrix,
 this maps a density matrix (plus geometry) to a scalar.
 
 Structure
@@ -8,7 +9,8 @@ Structure
 1. Split the input matrix into the same blocks the RDM head emits -- one on-site
    block per atom, one off-site block per graph edge.
 2. Project each onto the head's own Wigner-3j basis
-   (:class:`ShellPairEmbedding`), which is exact and lossless, and map the
+   (:class:`~boa.model.net.rdm_embedding.ShellPairEmbedding`), which is exact and lossless, and
+   map the
    coefficients into backbone irreps.
 3. Add those to the backbone's node and edge messages *before* the message
    passing, so every layer sees the density matrix rather than only the readout.
@@ -74,15 +76,18 @@ class HelmEnergy(nn.Module):
         basis_info: the AO basis the input matrix is written in. Must be the one
             the density-matrix model used, or the blocks are cut in the wrong
             places.
-        sphere_channels, hidden_channels, edge_channels, num_distance_basis,
-        num_layers, gaussian_cutoff, gaussian_width, norm_type, wigner_backend:
-            as :class:`HelmRDM`.
-        lmax, mmax: default to ``2 * max(union_ls)``, the lowest degree that can
+        lmax: defaults to ``2 * max(union_ls)``, the lowest degree that can
             represent every shell-pair block.
+        mmax: defaults to ``lmax``.
         head_hidden: width of the invariant readout MLP.
         edge_index_key: which graph the blocks and messages use. Must match the
             graph the density matrix was predicted on, or off-site blocks land
             on edges that were never predicted.
+
+    ``sphere_channels``, ``hidden_channels``, ``edge_channels``,
+    ``num_distance_basis``, ``num_layers``, ``gaussian_cutoff``,
+    ``gaussian_width``, ``norm_type``, ``wigner_backend`` and
+    ``max_num_elements`` are as in :class:`~boa.model.net.helm_net.HelmRDM`.
     """
 
     def __init__(
@@ -163,7 +168,8 @@ class HelmEnergy(nn.Module):
     def graph(self, batch) -> Tensor:
         """The message-passing graph: the configured radius graph without self-loops.
 
-        Same rule as :meth:`HelmRDM.graph`, and for the same reason: a self-loop
+        Same rule as :meth:`~boa.model.net.helm_net.HelmRDM.graph`, and for the same reason: a
+        self-loop
         has zero displacement, and the edge frame is built by rotating that
         displacement onto the z axis, which is undefined for the zero vector. A
         degenerate frame does not raise -- it silently costs rotational

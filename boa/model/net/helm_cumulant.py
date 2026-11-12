@@ -50,7 +50,7 @@ from boa.model.net.helm_net import (
 
 
 class HelmRDMCumulant(HelmRDM):
-    """:class:`HelmRDM` with a second pair of heads for the cumulant.
+    """:class:`~boa.model.net.helm_net.HelmRDM` with a second pair of heads for the cumulant.
 
     ``forward`` returns two ``(blocks, edge_index)`` pairs in a dict, ``"rdm"``
     and ``"cumulant"``, each in the form
@@ -62,13 +62,14 @@ class HelmRDMCumulant(HelmRDM):
         basis_info: the orbital basis of ``D``.
         aux_basis: the auxiliary basis of ``G``. Its element order must be
             ``basis_info.atomic_numbers``, so one element index serves both.
-        grouped_linear: on by default here (see :class:`ShellPairHead`); there
+        grouped_linear: on by default here (see :class:`~boa.model.net.helm_net.ShellPairHead`);
+        there
             are no older checkpoints of this model to stay compatible with.
         zero_init_cumulant: start the cumulant heads at zero weight, so the
             first prediction is G = 0 (no correlation).
         lmax: defaults to ``2 * max(l)`` over *both* bases -- 6 for 6-31g* with
             cc-pvdz-jkfit, set by the f functions of the latter.
-        Remaining arguments as :class:`HelmRDM`.
+        **kwargs: passed on to :class:`~boa.model.net.helm_net.HelmRDM`.
     """
 
     def __init__(
@@ -104,8 +105,8 @@ class HelmRDMCumulant(HelmRDM):
         )
         self.aux_dim = self.cumulant_node_head.dim
         if zero_init_cumulant:
-            # Untrained, the G head comes out ~650x the size of the target
-            # (EXP-2026-11-12-04): a cumulant loss of ~1e9 against ~1 for D, which
+            # Untrained, the G head comes out ~650x the size of the target:
+            # a cumulant loss of ~1e9 against ~1 for D, which
             # would hand the shared trunk entirely to G. Zero weights start G at
             # exactly 0 -- the mean-field answer, no correlation -- so L_G starts
             # at the reference's own size. The gradient with respect to these

@@ -116,7 +116,8 @@ def pyscf_shell_permutation(l: int) -> np.ndarray:
 def element_shell_degrees(basis) -> list[list[int]]:
     """Shell degrees of every element type, in pyscf order.
 
-    ``basis`` is either a :class:`BasisInfo`, whose ``irreps_per_atom`` are read,
+    ``basis`` is either a :class:`~boa.data.basis_info.BasisInfo`, whose ``irreps_per_atom`` are
+    read,
     or already a list of per-element degree lists -- the form the auxiliary
     basis of :mod:`boa.data.aux_basis` comes in, which has no ``BasisInfo``.
     """
@@ -133,7 +134,7 @@ def union_shell_degrees(basis) -> list[int]:
     ``k``-th union shell of degree ``l``.
 
     Args:
-        basis: a :class:`BasisInfo`, or per-element shell degree lists (see
+        basis: a :class:`~boa.data.basis_info.BasisInfo`, or per-element shell degree lists (see
             :func:`element_shell_degrees`).
     """
     per_l: dict[int, int] = {}
@@ -171,7 +172,8 @@ def selection_table(selections: list[list[int]], sink: int) -> np.ndarray:
     """Per-element selections as one ``(n_elements, max_len)`` index table.
 
     Rows shorter than the longest are padded with ``sink``, an index one past the
-    union layout that :meth:`HelmRDM.select` reads as zero and the scatter drops.
+    union layout that :meth:`~boa.model.net.helm_net.HelmRDM.select` reads as zero and the scatter
+    drops.
     """
     width = max(len(s) for s in selections)
     table = np.full((len(selections), width), sink, dtype=np.int64)
@@ -345,7 +347,8 @@ class HelmRDM(nn.Module):
         wigner_backend: ``torch`` or ``triton``.
         norm_type: equivariant normalisation used between blocks.
         max_num_elements: size of the element embedding table.
-        grouped_linear: see :class:`ShellPairHead`. Off by default so existing
+        grouped_linear: see :class:`~boa.model.net.helm_net.ShellPairHead`. Off by default so
+        existing
             checkpoints load; a new model should turn it on.
     """
 

@@ -431,8 +431,7 @@ class DfDbDataset(Dataset):
 
     Unlike the single-molecule sets, the graph cutoff matters here: 11.9% of
     ``||D||_F`` lies beyond 3.0 A on average and 0.01% beyond 8.0 A, so the
-    radius belongs at 8 A or the error floor dominates. See
-    ``EXP-2026-08-30-04`` in the research protocol.
+    radius belongs at 8 A or the error floor dominates.
     """
 
     #: Only the target is read by default. ``ovlp`` and ``vext`` are also
@@ -540,14 +539,14 @@ class DfDbDataset(Dataset):
 
 
 class DfDbCumulantDataset(DfDbDataset):
-    """:class:`DfDbDataset` plus the density-fitted cumulant 2-RDM.
+    """:class:`~boa.data.dataset.DfDbDataset` plus the density-fitted cumulant 2-RDM.
 
     Reads ``gamma2cum`` (``(n_aux, n_aux)``, the cumulant pair density on the
     auxiliary basis) and ``energycum_df`` (its energy, ``0.5 <G, (A|B)>``) and
     attaches the aux-basis Coulomb metric ``(A|B)`` as ``aux_metric``. The metric
     is what makes the cumulant loss meaningful: it has condition number ~3e6, and
     elementwise error on ``G`` mostly lands in directions that carry almost none
-    of the energy (``EXP-2026-11-12-03``).
+    of the energy.
 
     Unlike the parent, a missing cumulant is an error rather than silently
     dropped: the whole point of this dataset is that every molecule has one.
@@ -557,7 +556,8 @@ class DfDbCumulantDataset(DfDbDataset):
         cumulant_key: the stored name of ``G``.
         attach_metric: compute ``aux_metric`` per molecule. Costs one
             two-centre integral per sample, a few milliseconds.
-        Remaining arguments as :class:`DfDbDataset`.
+
+    The remaining arguments are as in :class:`~boa.data.dataset.DfDbDataset`.
     """
 
     def __init__(

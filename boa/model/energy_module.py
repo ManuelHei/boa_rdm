@@ -1,4 +1,4 @@
-"""Train :class:`HelmEnergy` on a predicted density matrix.
+"""Train :class:`~boa.model.net.helm_energy.HelmEnergy` on a predicted density matrix.
 
 The input is a density matrix a *frozen* RDM checkpoint produced, so this module
 never runs that model: the matrices were generated once by
@@ -56,7 +56,8 @@ class EnergyLightningModule(LightningModule):
     def ao_layout(self, batch) -> tuple[Tensor, Tensor, int]:
         """Per-atom AO positions and the padded AO count.
 
-        Reuses :class:`RDMLightningModule`'s implementation so the energy model
+        Reuses :class:`~boa.model.rdm_module.RDMLightningModule`'s implementation so the energy
+        model
         cuts blocks from exactly the slots the RDM model scattered them into.
         Sharing the code rather than restating it is the point: a divergence
         here would misalign every block without raising.
@@ -139,7 +140,8 @@ class EnergyLightningModule(LightningModule):
         self._log_errors("test", predicted, target, int(batch.num_graphs))
 
     def configure_optimizers(self):
-        """As :class:`BOA`'s: the optimiser and schedule live in the top-level
+        """As :class:`~boa.model.net.boa_net.BOA`'s: the optimiser and schedule live in the
+        top-level
         config, which ``train.py`` hands the module as ``train``, not in the
         model subtree."""
         train = self.hparams.train

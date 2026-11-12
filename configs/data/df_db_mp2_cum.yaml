@@ -5,7 +5,7 @@ defaults:
 # every shared field (to 2e-14), plus `gamma2cum`, the cumulant pair density
 # density-fitted onto cc-pvdz-jkfit, and `energycum_df` = 0.5 <gamma2cum, (A|B)>.
 # E[gamma] + energycum_df reproduces the MP2 energy to the DF error (7.5e-4 Ha
-# on CH4). See EXP-2026-11-12-03.
+# on CH4).
 dataset_name: df_db_mp2_cum
 
 basis_info:

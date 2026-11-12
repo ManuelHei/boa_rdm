@@ -33,7 +33,8 @@ class EnergyDataset(DfDbDataset):
             functional energy and so only exists for a DFT source; ``total``
             trains on ``e_ref`` itself, which is the only option for a
             correlated (MP2) source.
-        Remaining arguments as :class:`DfDbDataset`.
+
+    The remaining arguments are as in :class:`~boa.data.dataset.DfDbDataset`.
 
     The molecules are the intersection of the two directories, in sorted order,
     so a partially generated energy set is usable rather than an error -- but the

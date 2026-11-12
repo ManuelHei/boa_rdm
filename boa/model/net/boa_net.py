@@ -20,8 +20,7 @@ class AxialSeed(nn.Module):
     ---------------
     BOA seeds features only on the ``l = 0`` slots and reaches everything else
     through the overlap matrices, which makes the out-of-plane p coefficient of
-    a planar molecule *exactly* zero -- see
-    ``EXP-2026-08-29-03`` in the research protocol. The cause is a fixed-point
+    a planar molecule *exactly* zero. The cause is a fixed-point
     argument: BOA is exactly O(3)-equivariant, a planar molecule is fixed by the
     mirror :math:`\sigma` through its own plane, so every coefficient must
     satisfy :math:`a = \Gamma(\sigma) a` and the odd AOs are the ``-1``

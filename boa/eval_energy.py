@@ -1,16 +1,17 @@
 """Energy check for a trained RDM model over many validation molecules.
 
-The in-training version (:meth:`RDMLightningModule.log_energy_errors`) covers
+The in-training version (:meth:`~boa.model.rdm_module.RDMLightningModule.log_property_errors`)
+covers
 the same three molecules the figures show, which is enough to watch a trend but
 far too few to characterise a model: this dataset spans 3-27 atoms and 18-162
 AOs, and the first validation molecule is 4-atom ammonia.
 
-Both paths call :func:`boa.model.energy.total_energy`, so "the energy" means the
+Both paths call :func:`boa.model.properties.total_energy`, so "the energy" means the
 same thing in each.
 
 Usage::
 
-    .venv/bin/python boa/eval_energy.py --run 115 --n 100 --split validation
+    .venv/bin/python boa/eval_energy.py --run 42 --n 100 --split validation
 
 ``--run`` takes a run id, a run directory name or a full path; a bare id is
 resolved against ``$BOA_MODELS/train/runs``. Its ``config.yaml`` and best
@@ -18,8 +19,8 @@ checkpoint are read from there.
 
 Results go to two standard places, named ``<run>__<split>_<n>``::
 
-    $BOA_MODELS/eval/json/115_dfdb_helm_w128_devices-1__validation_100.json
-    $BOA_MODELS/eval/plots/115_dfdb_helm_w128_devices-1__validation_100.pdf
+    $BOA_MODELS/eval/json/42_my_run__validation_100.json
+    $BOA_MODELS/eval/plots/42_my_run__validation_100.pdf
 
 so every run's numbers and figures sit side by side and outlive the run
 directory. ``--out`` and ``--plot`` override either, ``--no-plot`` skips the
@@ -28,7 +29,7 @@ figure, and ``--plot-props`` narrows it to some of the three observables.
 ``--from-json`` redraws a figure from results written earlier, without loading
 the model or the dataset. It takes a path or, again, just the run id::
 
-    .venv/bin/python boa/eval_energy.py --from-json 115
+    .venv/bin/python boa/eval_energy.py --from-json 42
 
 ``--baseline`` additionally reports the energy of the *reference* matrix, which
 should reproduce the stored value to ~1e-7 Ha; if it does not, something about
@@ -112,7 +113,7 @@ def _match_one(candidates: list[Path], spec: str, what: str) -> Path:
 def resolve_run(spec) -> Path:
     """A run directory from a path, a directory name, or just its leading id.
 
-    ``--run 115`` is the common case: run directories carry a unique numeric
+    ``--run 42`` is the common case: run directories carry a unique numeric
     prefix, and the rest of the name is the whole override string, which nobody
     wants to type.
     """
@@ -148,7 +149,7 @@ def result_stem(run_dir: Path, split: str, n: int) -> str:
 
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--run", help="run id (e.g. 115), directory name, or full path")
+    p.add_argument("--run", help="run id (e.g. 42), directory name, or full path")
     p.add_argument("--n", type=int, default=50, help="number of molecules (0 = all)")
     p.add_argument(
         "--split", default="validation", choices=("validation", "test", "train")

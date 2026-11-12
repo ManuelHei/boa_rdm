@@ -30,7 +30,7 @@ than of the matrix. Still three orders of magnitude below any model error seen s
 far, but it is the reason the baseline check tolerates 1e-3 Ha rather than 1e-7.
 
 Both the in-training validation logging
-(:meth:`RDMLightningModule.log_property_errors`) and the standalone sweep
+(:meth:`~boa.model.rdm_module.RDMLightningModule.log_property_errors`) and the standalone sweep
 (``boa/eval_energy.py``) call :func:`compute_properties` here, so the two can
 never disagree about what any of these means.
 """

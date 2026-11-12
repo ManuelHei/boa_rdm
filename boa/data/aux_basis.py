@@ -12,7 +12,7 @@ with :math:`\\chi` the ``cc-pvdz-jkfit`` functions of ``pyscf.df.addons.make_aux
 in that function's ordering. Its energy is :math:`\\tfrac12 \\langle G, M \\rangle`
 with :math:`M = (A|B)` the aux-basis Coulomb metric (``int2c2e``). Both facts were
 checked against the stored ``energycum_df`` (exact) and against the stored MP2
-energy (7.5e-4 Ha on CH4, the density-fitting error); see ``EXP-2026-11-12-03``.
+energy (7.5e-4 Ha on CH4, the density-fitting error).
 
 There is no :class:`~boa.data.basis_info.BasisInfo` for this basis, and it does
 not need one. The density-matrix head needs only the shell degrees of each

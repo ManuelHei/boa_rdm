@@ -36,7 +36,8 @@ from boa.model.net.helm_net import ShellPairHead
 class ShellPairEmbedding(nn.Module):
     """Dense shell-pair blocks to backbone irreps.
 
-    Mirrors :class:`ShellPairHead` argument for argument, and builds the same
+    Mirrors :class:`~boa.model.net.helm_net.ShellPairHead` argument for argument, and builds the
+    same
     ``assembly`` basis, so the two are guaranteed to agree about the shell
     layout, the pyscf ordering and which ``L`` each pair contributes.
 
@@ -85,7 +86,8 @@ class ShellPairEmbedding(nn.Module):
     def unstack_irreps(self, x: Tensor) -> Tensor:
         """e3nn's ``C x 0e + C x 1e + ...`` to ``(N, (lmax+1)^2, C)`` l-major.
 
-        The inverse of :meth:`ShellPairHead.stack_irreps`, and the reason this
+        The inverse of :meth:`~boa.model.net.helm_net.ShellPairHead.stack_irreps`, and the reason
+        this
         class exists as more than a projection: the backbone wants a dense
         ``(N, (lmax+1)^2, C)`` tensor, while ``o3.Linear`` emits a flat
         irreps-major one.
