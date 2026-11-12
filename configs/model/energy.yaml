@@ -1,0 +1,21 @@
+defaults:
+  - net: helm_energy
+
+_target_: boa.model.energy_module.EnergyLightningModule
+
+basis_info: ${data.basis_info}
+
+# `delta` trains on e_ref - E[rdm_pred] and needs a DFT source; `total` trains on
+# the reference energy itself and is the only option for a correlated (MP2) one.
+# It must match the dataset's own target_mode.
+criterion: mse
+target_key: energy_target
+input_key: rdm_pred
+
+# The network sees (target - shift) / scale, so it always works on an O(1)
+# quantity. A delta is already small and needs neither; a total energy runs to
+# -400 Ha and needs both, or the first layer starts saturated.
+target_shift: 0.0
+target_scale: 1.0
+
+log_train_metrics_interval: 50

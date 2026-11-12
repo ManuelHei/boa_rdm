@@ -1,0 +1,29 @@
+_target_: boa.model.net.helm_energy.HelmEnergy
+
+basis_info: ${model.basis_info}
+
+# Matched to the density-matrix model this reads from, so the two see the same
+# resolution; there is no reason for them to differ, and a mismatch is a silent
+# capacity cliff rather than an error.
+sphere_channels: 128
+hidden_channels: 128
+edge_channels: 128
+num_distance_basis: 64
+num_layers: 3
+head_hidden: 128
+
+# lmax defaults to 2*max(l) of the basis, the lowest degree that can represent
+# every shell-pair block, exactly as for the RDM head.
+lmax: null
+mmax: null
+
+# Must span the graph; see configs/model/net/helm.yaml.
+gaussian_cutoff: 8.0
+gaussian_width: 1.0
+
+# The graph the density matrix was predicted on. Self-loops are dropped inside
+# the net: their frame is undefined and it costs rotational invariance.
+edge_index_key: edge_index
+
+wigner_backend: torch
+norm_type: rms_norm_sh

@@ -1,0 +1,30 @@
+# @package _global_
+
+# Energy from a predicted density matrix, on a DFT source.
+#
+# The target is the *residual* e_ref - E[rdm_pred]: the functional energy of the
+# prediction is computable, so the model only has to learn what that evaluation
+# gets wrong, which is ~0.02 Ha rather than ~400. At inference, evaluate the
+# functional and add this correction.
+#
+# For a correlated (MP2) source no such baseline exists, so switch to
+# data.target_mode=total and set model.target_shift / target_scale, or the
+# network starts saturated on a -400 Ha target.
+
+defaults:
+  - override /data: df_db_energy
+  - override /model: energy
+  - override /trainer: default
+
+name: df_db_energy
+
+initial_guess_pre_training_steps: 0
+
+trainer:
+  max_steps: 20000
+
+lr_scheduler:
+  T_max: ${trainer.max_steps}
+
+optim:
+  lr: 1e-3
