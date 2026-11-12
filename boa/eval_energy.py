@@ -45,51 +45,12 @@ import os
 import sys
 from pathlib import Path
 
-#: Threads and dataloader workers this script may use unless told otherwise.
-#: Eight keeps a shared node usable; pyscf will otherwise take every core it
-#: can see, which on a 128-core machine is both antisocial and slower.
-DEFAULT_CPUS = 8
+# One definition of the cap, shared with boa/make_energy_dataset.py. It must
+# run before numpy/torch/pyscf load; see boa/cpu_limit.py for why, and for the
+# measurements that make uncapped the worst available setting.
+from boa.cpu_limit import DEFAULT_CPUS, limit_from_argv, limit_threads  # noqa: E402,F401
 
-#: The variables every BLAS and OpenMP runtime reads *when it loads*.
-_THREAD_VARS = (
-    "OMP_NUM_THREADS",
-    "MKL_NUM_THREADS",
-    "OPENBLAS_NUM_THREADS",
-    "NUMEXPR_NUM_THREADS",
-    "VECLIB_MAXIMUM_THREADS",
-)
-
-
-def _cpus_from_argv(default: int = DEFAULT_CPUS) -> int:
-    """``--cpus`` read by hand, because argparse runs far too late.
-
-    OpenMP and the BLAS libraries size their thread pools when they are loaded,
-    and no call afterwards shrinks a pool that is already up. So the value has to
-    be in the environment before ``numpy``, ``torch`` and ``pyscf`` are imported
-    -- which is before ``main`` exists. argparse still declares the option, so
-    ``--help`` documents it and a bad value is still rejected properly.
-    """
-    argv = sys.argv[1:]
-    for i, arg in enumerate(argv):
-        if arg == "--cpus" and i + 1 < len(argv):
-            arg = f"--cpus={argv[i + 1]}"
-        if arg.startswith("--cpus="):
-            try:
-                return int(arg.split("=", 1)[1])
-            except ValueError:
-                return default  # argparse will complain about it in a moment
-    return default
-
-
-def limit_threads(cpus: int) -> None:
-    """Cap the OpenMP and BLAS thread pools. ``0`` leaves the environment alone."""
-    if cpus <= 0:
-        return
-    for var in _THREAD_VARS:
-        os.environ[var] = str(cpus)
-
-
-limit_threads(_cpus_from_argv())
+limit_from_argv()
 
 import numpy as np
 import torch
