@@ -522,8 +522,92 @@ class DfDbDataset(Dataset):
             )
         of_data.add_item("n_atom", torch.tensor([len(charges)], dtype=int), Representation.NONE)
         of_data.add_item("atom_types", torch.as_tensor(charges), Representation.NONE)
+        for name, value in self.extra_items(mol, values).items():
+            of_data.add_item(name, value, Representation.NONE)
         of_data.id = path.stem
 
         if self.transform is not None:
             of_data = self.transform(of_data)
         return of_data
+
+    def extra_items(self, mol, values: dict) -> dict:
+        """Further per-molecule items derived from the pyscf molecule. None by default.
+
+        A hook for subclasses that need the molecule itself -- an integral, say --
+        rather than something stored in the file.
+        """
+        return {}
+
+
+class DfDbCumulantDataset(DfDbDataset):
+    """:class:`DfDbDataset` plus the density-fitted cumulant 2-RDM.
+
+    Reads ``gamma2cum`` (``(n_aux, n_aux)``, the cumulant pair density on the
+    auxiliary basis) and ``energycum_df`` (its energy, ``0.5 <G, (A|B)>``) and
+    attaches the aux-basis Coulomb metric ``(A|B)`` as ``aux_metric``. The metric
+    is what makes the cumulant loss meaningful: it has condition number ~3e6, and
+    elementwise error on ``G`` mostly lands in directions that carry almost none
+    of the energy (``EXP-2026-11-12-03``).
+
+    Unlike the parent, a missing cumulant is an error rather than silently
+    dropped: the whole point of this dataset is that every molecule has one.
+
+    Args:
+        aux_basis: an :class:`~boa.data.aux_basis.AuxBasisLayout`.
+        cumulant_key: the stored name of ``G``.
+        attach_metric: compute ``aux_metric`` per molecule. Costs one
+            two-centre integral per sample, a few milliseconds.
+        Remaining arguments as :class:`DfDbDataset`.
+    """
+
+    def __init__(
+        self,
+        path,
+        basis_info,
+        aux_basis,
+        transform=None,
+        rdm_key="gamma",
+        cumulant_key="gamma2cum",
+        pattern="*.hdf5",
+        extra_props=(),
+        attach_metric: bool = True,
+    ):
+        extra = [k for k in extra_props if k not in (cumulant_key, "energycum_df")]
+        super().__init__(
+            path=path,
+            basis_info=basis_info,
+            transform=transform,
+            rdm_key=rdm_key,
+            pattern=pattern,
+            extra_props=(cumulant_key, "energycum_df", *extra),
+        )
+        self.aux_basis = aux_basis
+        self.cumulant_key = cumulant_key
+        self.attach_metric = attach_metric
+        for key in (cumulant_key, "energycum_df"):
+            if key not in self.props:
+                raise KeyError(
+                    f"'{key}' not found in {self.paths[0]}. This is the cumulant release of "
+                    f"df_db_mp2; the plain release carries no 2-RDM."
+                )
+
+        # The aux layout has to reproduce the stored matrix size, or the blocks
+        # are cut from the wrong places -- the same check the parent makes for D.
+        charges, positions, _, _ = self._read(self.paths[0])
+        mol = build_molecule(charges=charges, positions=positions, basis=basis_info.basis_dict)
+        n_aux = self.aux_basis.auxmol(mol).nao_nr()
+        with h5py.File(self.paths[0], "r") as h5:
+            group = h5[next(iter(h5))]
+            props_name = next(name for name in group if "_props_" in name)
+            stored = group[props_name][cumulant_key].shape[-1]
+        if n_aux != stored:
+            raise ValueError(
+                f"{self.aux_basis.auxbasis} gives {n_aux} functions for {self.paths[0].name} "
+                f"but '{cumulant_key}' is {stored} wide. Wrong auxiliary basis."
+            )
+
+    def extra_items(self, mol, values: dict) -> dict:
+        if not self.attach_metric:
+            return {}
+        metric = self.aux_basis.coulomb_metric(mol)
+        return {"aux_metric": torch.as_tensor(metric, dtype=torch.get_default_dtype())}

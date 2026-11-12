@@ -1,0 +1,25 @@
+defaults:
+  - datamodule: df_db_mp2_cum
+
+# The cumulant release of df_db_mp2: 6 900 of its 15 000 molecules, identical in
+# every shared field (to 2e-14), plus `gamma2cum`, the cumulant pair density
+# density-fitted onto cc-pvdz-jkfit, and `energycum_df` = 0.5 <gamma2cum, (A|B)>.
+# E[gamma] + energycum_df reproduces the MP2 energy to the DF error (7.5e-4 Ha
+# on CH4). See EXP-2026-11-12-03.
+dataset_name: df_db_mp2_cum
+
+basis_info:
+  _target_: boa.data.basis_info.BasisInfo.from_atomic_numbers_with_even_tempered_basis
+  basis: '6-31g*'
+  atomic_numbers: [1, 6, 7, 8, 9]
+  beta: None
+  even_tempered: false
+  uncontracted: false
+
+# The basis gamma2cum is written in, in make_auxmol's function ordering. Elements
+# in basis_info's order, so one element index serves both bases.
+aux_basis:
+  _target_: boa.data.aux_basis.AuxBasisLayout
+  atomic_numbers: ${data.basis_info.atomic_numbers}
+  auxbasis: cc-pvdz-jkfit
+  basis: ${data.basis_info.basis}

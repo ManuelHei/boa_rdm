@@ -1,0 +1,25 @@
+defaults:
+  - dataset: df_db_mp2_cum
+
+_target_: boa.data.datamodule.DataModule
+
+# Inherited from df_db_mp2's geometry-disjoint split by molecule id, so no
+# molecule changes side between the two datasets and the subset stays disjoint.
+split_file: ${paths.data_dir}/${data.dataset_name}/datasplits.json
+
+# G is ~35x the entries of D (744 x 744 at the median), and the aux metric
+# travels with it; 8 molecules is ~35 MB of the two per batch in float32.
+batch_size:
+  train: 8
+  val: 8
+  test: 8
+
+num_workers:
+  train: 8
+  val: 8
+  test: 8
+
+dataloader_kwargs:
+  follow_batch: ["coeffs", "atomic_numbers"]
+  # All three vary in size per molecule and cannot be stacked.
+  list_keys: ["rdm", "gamma2cum", "aux_metric"]
