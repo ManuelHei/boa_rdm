@@ -67,6 +67,90 @@ from boa.model.onsite import OnsiteL0Statistics, load_onsite_bias, save_onsite_b
 pylogger = logging.getLogger(__name__)
 
 
+def atom_layout(
+    batch, dim_per_element: Tensor, atomic_number_to_atom_index: Tensor, max_dim: int
+) -> tuple[Tensor, Tensor, int]:
+    """Map every (atom, padded function slot) pair to a function index in its molecule.
+
+    Shared by every matrix over atom-centred functions -- the AO density matrix
+    and the aux-basis cumulant alike -- which differ only in how many functions
+    each element carries.
+
+    Returns:
+        index: ``(n_atom, max_dim)``. Entry ``[k, p]`` is the index of slot ``p``
+            of atom ``k`` within its own molecule, or ``n`` (a scatter sink for
+            the padding) if the slot is unused.
+        n_per_mol: ``(n_mol,)`` number of functions of each molecule.
+        n: the largest of those, i.e. the size the matrices are padded to.
+    """
+    atom_index = atomic_number_to_atom_index[batch.atomic_numbers.long()]
+    n_bas_atom = dim_per_element[atom_index]  # (n_atom,)
+
+    n_mol = int(batch.num_graphs)
+    n_per_mol = torch.zeros(n_mol, dtype=torch.long, device=n_bas_atom.device)
+    n_per_mol.index_add_(0, batch.batch, n_bas_atom)
+    n = int(n_per_mol.max())
+
+    # Offset of each atom, first globally then relative to its molecule.
+    global_offset = torch.cumsum(n_bas_atom, dim=0) - n_bas_atom
+    mol_start = torch.cumsum(n_per_mol, dim=0) - n_per_mol
+    offset = global_offset - mol_start[batch.batch]
+
+    slot = torch.arange(max_dim, device=n_bas_atom.device)
+    index = torch.where(
+        slot[None, :] < n_bas_atom[:, None],
+        offset[:, None] + slot[None, :],
+        torch.full_like(n_bas_atom[:, None], n),
+    )
+    return index, n_per_mol, n
+
+
+def scatter_dense(batch, blocks: Tensor, edge_index: Tensor, index: Tensor, n: int) -> Tensor:
+    """Scatter-add one block per edge into ``(n_mol, n, n)``; repeated pairs accumulate.
+
+    ``index`` is :func:`atom_layout`'s; its sink value ``n`` absorbs the padded
+    slots into a row and column that are sliced off.
+    """
+    rows = index[edge_index[0]]  # (n_edge, max_dim)
+    cols = index[edge_index[1]]
+    mol = batch.batch[edge_index[0]]  # (n_edge,)
+    n_mol = int(batch.num_graphs)
+    pad = n + 1
+    flat = (mol[:, None, None] * pad * pad + rows[:, :, None] * pad + cols[:, None, :]).reshape(-1)
+    out = torch.zeros(n_mol * pad * pad, dtype=blocks.dtype, device=blocks.device)
+    out.index_add_(0, flat, blocks.reshape(-1))
+    return out.view(n_mol, pad, pad)[:, :n, :n]
+
+
+def pad_matrices(matrices, n_mol: int, n: int, like: Tensor, name: str) -> Tensor:
+    """A collated per-molecule matrix field as a zero-padded ``(n_mol, n, n)`` tensor.
+
+    Accepts the three shapes a collater plausibly produces: an already stacked
+    ``(n_mol, n, n)`` tensor, a list of per-molecule matrices (``list_keys``
+    collation), or a default-collated ``(n_mol * n, n)`` block stack.
+    """
+    if isinstance(matrices, (list, tuple)):
+        stacked = torch.zeros(n_mol, n, n, dtype=like.dtype, device=like.device)
+        for i, matrix in enumerate(matrices):
+            matrix = torch.as_tensor(matrix, dtype=like.dtype, device=like.device)
+            stacked[i, : matrix.shape[0], : matrix.shape[1]] = matrix
+        return stacked
+
+    matrices = torch.as_tensor(matrices, dtype=like.dtype, device=like.device)
+    if matrices.dim() == 2 and matrices.shape[0] == n_mol * matrices.shape[1]:
+        matrices = matrices.view(n_mol, matrices.shape[1], matrices.shape[1])
+    elif matrices.dim() != 3:
+        raise ValueError(
+            f"Cannot interpret '{name}' of shape {tuple(matrices.shape)} as {n_mol} matrices."
+        )
+    if matrices.shape[-2:] != (n, n):
+        raise ValueError(
+            f"'{name}' is {tuple(matrices.shape[-2:])} but the basis implies {(n, n)} "
+            f"functions. Check that it was built in the basis the model is configured with."
+        )
+    return matrices
+
+
 class RDMLightningModule(LightningModule):
     """Predict the one-particle density matrix directly, with no grid evaluation."""
 
@@ -152,7 +236,7 @@ class RDMLightningModule(LightningModule):
     # AO bookkeeping
     # ------------------------------------------------------------------
     def ao_layout(self, batch) -> tuple[Tensor, Tensor, int]:
-        """Map every (atom, padded coefficient slot) pair to an AO index.
+        """:func:`atom_layout` for the AO basis.
 
         Returns:
             ao_index: ``(n_atom, max_basis_dim)``. Entry ``[k, p]`` is the AO
@@ -161,26 +245,9 @@ class RDMLightningModule(LightningModule):
             n_ao_per_mol: ``(n_mol,)`` number of AOs of each molecule.
             n_ao: the largest of those, i.e. the size the matrices are padded to.
         """
-        atom_index = self.atomic_number_to_atom_index[batch.atomic_numbers.long()]
-        n_bas_atom = self.basis_dim_per_atom[atom_index]  # (n_atom,)
-
-        n_mol = int(batch.num_graphs)
-        n_ao_per_mol = torch.zeros(n_mol, dtype=torch.long, device=n_bas_atom.device)
-        n_ao_per_mol.index_add_(0, batch.batch, n_bas_atom)
-        n_ao = int(n_ao_per_mol.max())
-
-        # AO offset of each atom, first globally then relative to its molecule.
-        global_offset = torch.cumsum(n_bas_atom, dim=0) - n_bas_atom
-        mol_start = torch.cumsum(n_ao_per_mol, dim=0) - n_ao_per_mol
-        ao_offset = global_offset - mol_start[batch.batch]
-
-        slot = torch.arange(self.max_basis_dim, device=n_bas_atom.device)
-        ao_index = torch.where(
-            slot[None, :] < n_bas_atom[:, None],
-            ao_offset[:, None] + slot[None, :],
-            torch.full_like(n_bas_atom[:, None], n_ao),
+        return atom_layout(
+            batch, self.basis_dim_per_atom, self.atomic_number_to_atom_index, self.max_basis_dim
         )
-        return ao_index, n_ao_per_mol, n_ao
 
     # ------------------------------------------------------------------
     # The density matrix
@@ -230,21 +297,8 @@ class RDMLightningModule(LightningModule):
             ao_mask: ``(n_mol, n_ao)``, ``True`` on real AOs.
         """
         ao_index, n_ao_per_mol, n_ao = self.ao_layout(batch)
-
-        rows = ao_index[edge_index[0]]  # (n_edge, max_basis_dim)
-        cols = ao_index[edge_index[1]]
-        mol = batch.batch[edge_index[0]]  # (n_edge,)
-
-        # Scatter into a (n_mol, n_ao + 1, n_ao + 1) buffer; index n_ao is the
-        # sink that absorbs the padded coefficient slots, and is sliced off.
         n_mol = int(batch.num_graphs)
-        pad = n_ao + 1
-        flat = (
-            mol[:, None, None] * pad * pad + rows[:, :, None] * pad + cols[:, None, :]
-        ).reshape(-1)
-        rdm = torch.zeros(n_mol * pad * pad, dtype=blocks.dtype, device=blocks.device)
-        rdm.index_add_(0, flat, blocks.reshape(-1))
-        rdm = rdm.view(n_mol, pad, pad)[:, :n_ao, :n_ao]
+        rdm = scatter_dense(batch, blocks, edge_index, ao_index, n_ao)
 
         if self.symmetrize:
             rdm = 0.5 * (rdm + rdm.transpose(1, 2))
@@ -441,31 +495,7 @@ class RDMLightningModule(LightningModule):
                 f"used."
             )
 
-        if isinstance(target, (list, tuple)):
-            stacked = torch.zeros(n_mol, n_ao, n_ao, dtype=like.dtype, device=like.device)
-            for i, matrix in enumerate(target):
-                matrix = torch.as_tensor(matrix, dtype=like.dtype, device=like.device)
-                stacked[i, : matrix.shape[0], : matrix.shape[1]] = matrix
-            return stacked
-
-        target = torch.as_tensor(target, dtype=like.dtype, device=like.device)
-        if target.dim() == 3:
-            pass
-        elif target.dim() == 2 and target.shape[0] == n_mol * target.shape[1]:
-            target = target.view(n_mol, target.shape[1], target.shape[1])
-        else:
-            raise ValueError(
-                f"Cannot interpret '{self.target_key}' of shape {tuple(target.shape)} as "
-                f"{n_mol} density matrices."
-            )
-
-        if target.shape[-2:] != (n_ao, n_ao):
-            raise ValueError(
-                f"Reference density matrix is {tuple(target.shape[-2:])} but the basis implies "
-                f"{(n_ao, n_ao)} AOs. Check that the target was built with "
-                f"basis_info.basis_dict."
-            )
-        return target
+        return pad_matrices(target, n_mol, n_ao, like, self.target_key)
 
     # ------------------------------------------------------------------
     # Loss and metrics

@@ -113,24 +113,40 @@ def pyscf_shell_permutation(l: int) -> np.ndarray:
     return q
 
 
-def union_shell_degrees(basis_info: BasisInfo) -> list[int]:
+def element_shell_degrees(basis) -> list[list[int]]:
+    """Shell degrees of every element type, in pyscf order.
+
+    ``basis`` is either a :class:`BasisInfo`, whose ``irreps_per_atom`` are read,
+    or already a list of per-element degree lists -- the form the auxiliary
+    basis of :mod:`boa.data.aux_basis` comes in, which has no ``BasisInfo``.
+    """
+    if isinstance(basis, BasisInfo) or hasattr(basis, "irreps_per_atom"):
+        return [[ir.l for mul, ir in irreps for _ in range(mul)] for irreps in basis.irreps_per_atom]
+    return [list(ls) for ls in basis]
+
+
+def union_shell_degrees(basis) -> list[int]:
     """The degrees of the union shell layout: the most shells of each ``l`` any element has.
 
     Returned ascending in ``l``, which is also the order pyscf lays out an
     atom's AOs, so an element's ``k``-th shell of degree ``l`` maps to the
     ``k``-th union shell of degree ``l``.
+
+    Args:
+        basis: a :class:`BasisInfo`, or per-element shell degree lists (see
+            :func:`element_shell_degrees`).
     """
     per_l: dict[int, int] = {}
-    for irreps in basis_info.irreps_per_atom:
+    for ls in element_shell_degrees(basis):
         counts: dict[int, int] = {}
-        for mul, ir in irreps:
-            counts[ir.l] = counts.get(ir.l, 0) + mul
+        for l in ls:
+            counts[l] = counts.get(l, 0) + 1
         for l, count in counts.items():
             per_l[l] = max(per_l.get(l, 0), count)
     return [l for l in sorted(per_l) for _ in range(per_l[l])]
 
 
-def element_ao_selection(basis_info: BasisInfo, union_ls: list[int]) -> list[list[int]]:
+def element_ao_selection(basis, union_ls: list[int]) -> list[list[int]]:
     """For each element type, the union-layout AO indices holding its own AOs, in pyscf order."""
     union_offset, offset = [], 0
     for l in union_ls:
@@ -138,8 +154,7 @@ def element_ao_selection(basis_info: BasisInfo, union_ls: list[int]) -> list[lis
         offset += 2 * l + 1
 
     selections = []
-    for irreps in basis_info.irreps_per_atom:
-        element_ls = [ir.l for mul, ir in irreps for _ in range(mul)]
+    for element_ls in element_shell_degrees(basis):
         used: dict[int, int] = {}
         selection: list[int] = []
         for l in element_ls:
@@ -150,6 +165,19 @@ def element_ao_selection(basis_info: BasisInfo, union_ls: list[int]) -> list[lis
             selection.extend(range(union_offset[shell], union_offset[shell] + 2 * l + 1))
         selections.append(selection)
     return selections
+
+
+def selection_table(selections: list[list[int]], sink: int) -> np.ndarray:
+    """Per-element selections as one ``(n_elements, max_len)`` index table.
+
+    Rows shorter than the longest are padded with ``sink``, an index one past the
+    union layout that :meth:`HelmRDM.select` reads as zero and the scatter drops.
+    """
+    width = max(len(s) for s in selections)
+    table = np.full((len(selections), width), sink, dtype=np.int64)
+    for i, sel in enumerate(selections):
+        table[i, : len(sel)] = sel
+    return table
 
 
 class ShellPairHead(nn.Module):
@@ -167,10 +195,26 @@ class ShellPairHead(nn.Module):
             and a shell paired with itself keeps only even ``L`` -- the odd
             terms of ``l (x) l`` are the antisymmetric ones, which cannot appear
             in a symmetric block.
+        grouped_linear: declare the linear layer's output grouped by degree,
+            ``n_0 x 0e + n_1 x 1e + ...``, instead of one ``1 x Le`` entry per
+            (shell pair, L). Same function class, same parameter count, same
+            initialisation -- every output copy of degree ``L`` is still an
+            independent linear combination of the ``C`` input channels of that
+            degree -- but e3nn then runs one matmul per degree rather than one
+            small op per entry. For the cumulant's 70-function aux layout that is
+            ~1700 entries per head, and the ungrouped layer measured 105 ms of a
+            250 ms forward pass. The reordering is folded into ``assembly``, so
+            ``forward`` is unchanged. Off by default only so existing
+            checkpoints, whose weights are laid out per entry, still load.
     """
 
     def __init__(
-        self, union_ls: list[int], sphere_channels: int, lmax: int, symmetric: bool
+        self,
+        union_ls: list[int],
+        sphere_channels: int,
+        lmax: int,
+        symmetric: bool,
+        grouped_linear: bool = False,
     ) -> None:
         super().__init__()
         max_l = max(union_ls)
@@ -220,6 +264,20 @@ class ShellPairHead(nn.Module):
                     if symmetric and a != b:
                         block[cols, rows] = w3j[:, :, m].T
                     assembly.append(block)
+
+        if grouped_linear:
+            # Row order of `assembly` follows the output layout. Ungrouped, that
+            # is entry by entry; grouped, e3nn lays out `n_L x L` copy-major, each
+            # copy's 2L+1 components contiguous, degree by degree. Reorder the
+            # rows to match, so the k-th copy of L is the k-th entry of degree L.
+            rows, start = {}, 0
+            for _, (L, _) in irreps_out:
+                rows.setdefault(L, []).append(list(range(start, start + 2 * L + 1)))
+                start += 2 * L + 1
+            order = [r for L in sorted(rows) for copy in rows[L] for r in copy]
+            assembly = [assembly[r] for r in order]
+            irreps_out = [(len(rows[L]), (L, 1)) for L in sorted(rows)]
+        self.grouped_linear = grouped_linear
 
         self.irreps_in = o3.Irreps([(sphere_channels, (l, 1)) for l in range(lmax + 1)])
         self.irreps_out = o3.Irreps(irreps_out)
@@ -287,6 +345,8 @@ class HelmRDM(nn.Module):
         wigner_backend: ``torch`` or ``triton``.
         norm_type: equivariant normalisation used between blocks.
         max_num_elements: size of the element embedding table.
+        grouped_linear: see :class:`ShellPairHead`. Off by default so existing
+            checkpoints load; a new model should turn it on.
     """
 
     def __init__(
@@ -305,9 +365,11 @@ class HelmRDM(nn.Module):
         wigner_backend: str = "torch",
         norm_type: str = "rms_norm_sh",
         max_num_elements: int = 100,
+        grouped_linear: bool = False,
     ) -> None:
         super().__init__()
         self.basis_info = basis_info
+        self.grouped_linear = grouped_linear
         self.edge_index_key = edge_index_key
 
         union_ls = union_shell_degrees(basis_info)
@@ -332,17 +394,19 @@ class HelmRDM(nn.Module):
             wigner_backend=wigner_backend,
         )
 
-        self.node_head = ShellPairHead(union_ls, sphere_channels, self.lmax, symmetric=True)
-        self.edge_head = ShellPairHead(union_ls, sphere_channels, self.lmax, symmetric=False)
+        self.node_head = ShellPairHead(
+            union_ls, sphere_channels, self.lmax, symmetric=True, grouped_linear=grouped_linear
+        )
+        self.edge_head = ShellPairHead(
+            union_ls, sphere_channels, self.lmax, symmetric=False, grouped_linear=grouped_linear
+        )
 
         # Union-layout AO indices per element, padded to max_basis_dim with a
         # sink row that the scatter later drops.
-        selections = element_ao_selection(basis_info, union_ls)
-        max_basis_dim = int(max(basis_info.basis_dim_per_atom))
         self.dim = self.node_head.dim
-        selection = np.full((len(selections), max_basis_dim), self.dim, dtype=np.int64)
-        for i, sel in enumerate(selections):
-            selection[i, : len(sel)] = sel
+        selection = selection_table(element_ao_selection(basis_info, union_ls), sink=self.dim)
+        max_basis_dim = int(max(basis_info.basis_dim_per_atom))
+        assert selection.shape[1] == max_basis_dim, (selection.shape, max_basis_dim)
         self.register_buffer("ao_selection", torch.as_tensor(selection))
         self.register_buffer(
             "atomic_number_to_atom_index",
@@ -360,22 +424,31 @@ class HelmRDM(nn.Module):
         edge_index = getattr(batch, self.edge_index_key)
         return edge_index[:, edge_index[0] != edge_index[1]]
 
-    def select(self, blocks: Tensor, atom_index_row: Tensor, atom_index_col: Tensor) -> Tensor:
-        """Cut each union-layout block down to the AOs the two atoms actually carry."""
+    def select(
+        self,
+        blocks: Tensor,
+        atom_index_row: Tensor,
+        atom_index_col: Tensor,
+        selection: Tensor | None = None,
+    ) -> Tensor:
+        """Cut each union-layout block down to the functions the two atoms actually carry.
+
+        ``selection`` defaults to the AO table; a second basis passes its own,
+        whose sink index is its own union dimension.
+        """
+        selection = self.ao_selection if selection is None else selection
+        dim = blocks.shape[-1]
         padded = torch.zeros(
-            blocks.shape[0],
-            self.dim + 1,
-            self.dim + 1,
-            dtype=blocks.dtype,
-            device=blocks.device,
+            blocks.shape[0], dim + 1, dim + 1, dtype=blocks.dtype, device=blocks.device
         )
-        padded[:, : self.dim, : self.dim] = blocks
-        rows = self.ao_selection[atom_index_row]  # (n, max_basis_dim)
-        cols = self.ao_selection[atom_index_col]
+        padded[:, :dim, :dim] = blocks
+        rows = selection[atom_index_row]  # (n, max_basis_dim)
+        cols = selection[atom_index_col]
         n = torch.arange(blocks.shape[0], device=blocks.device)
         return padded[n[:, None, None], rows[:, :, None], cols[:, None, :]]
 
-    def forward(self, batch) -> tuple[Tensor, Tensor]:
+    def embed(self, batch) -> tuple[dict, Tensor, Tensor]:
+        """Backbone features, the message-passing graph and each atom's element index."""
         edge_index = self.graph(batch)
         pos = batch.pos
         vec = pos[edge_index[1]] - pos[edge_index[0]]
@@ -395,21 +468,42 @@ class HelmRDM(nn.Module):
             ),
             num_atoms_in_molecule=n_atom_per_mol,
         )
-
         embeddings = self.backbone(helm_batch)
         atom_index = self.atomic_number_to_atom_index[batch.atomic_numbers.long()]
+        return embeddings, edge_index, atom_index
 
-        node_blocks = self.node_head(embeddings["node_embeddings"])
-        node_blocks = self.select(node_blocks, atom_index, atom_index)
+    def blocks(
+        self,
+        embeddings: dict,
+        edge_index: Tensor,
+        atom_index: Tensor,
+        node_head: "ShellPairHead",
+        edge_head: "ShellPairHead",
+        selection: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        """One pair of heads applied to the shared features: blocks and their pairs.
 
-        edge_blocks = self.edge_head(embeddings["edge_embeddings"])
-        edge_blocks = self.select(
-            edge_blocks, atom_index[edge_index[0]], atom_index[edge_index[1]]
+        Self-loops carry the diagonal blocks from the node features, both
+        directions of every graph edge the off-diagonal ones.
+        """
+        node_blocks = self.select(
+            node_head(embeddings["node_embeddings"]), atom_index, atom_index, selection
         )
-
-        n_atom = pos.shape[0]
-        self_loops = torch.arange(n_atom, device=pos.device).expand(2, n_atom)
+        edge_blocks = self.select(
+            edge_head(embeddings["edge_embeddings"]),
+            atom_index[edge_index[0]],
+            atom_index[edge_index[1]],
+            selection,
+        )
+        n_atom = atom_index.shape[0]
+        self_loops = torch.arange(n_atom, device=atom_index.device).expand(2, n_atom)
         return (
             torch.cat([node_blocks, edge_blocks], dim=0),
             torch.cat([self_loops, edge_index], dim=1),
+        )
+
+    def forward(self, batch) -> tuple[Tensor, Tensor]:
+        embeddings, edge_index, atom_index = self.embed(batch)
+        return self.blocks(
+            embeddings, edge_index, atom_index, self.node_head, self.edge_head, self.ao_selection
         )
