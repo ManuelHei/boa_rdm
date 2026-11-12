@@ -294,7 +294,8 @@ class eSEN_Backbone(nn.Module):
 
 
     @conditional_grad(torch.enable_grad())
-    def forward(self, batch, batch_index=None, output_dir=None):
+    def forward(self, batch, batch_index=None, output_dir=None,
+                extra_node_features=None, extra_edge_features=None):
 
 
         distributed_graph_training = batch.distributed_graph_training if "distributed_graph_training" in batch else False
@@ -432,6 +433,16 @@ class eSEN_Backbone(nn.Module):
         ###############################################################
         # Update spherical node embeddings
         ###############################################################
+        # Optional externally supplied irrep features, added before the message
+        # passing so every layer sees them. Used by HelmEnergy to inject the
+        # density matrix; None for the plain geometry-only path, which is
+        # bit-identical to before. Added rather than concatenated so the channel
+        # count, and therefore every downstream shape, is unchanged.
+        if extra_node_features is not None:
+            x_message_node = x_message_node + extra_node_features.to(x_message_node.dtype)
+        if extra_edge_features is not None and x_message_edge is not None:
+            x_message_edge = x_message_edge + extra_edge_features.to(x_message_edge.dtype)
+
         for i in range(self.num_layers):
 
             x_message_node  = self.node_blocks[i](
